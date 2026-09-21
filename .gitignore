@@ -1,0 +1,28 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+
+# IDE and user-specific files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Test build output
+tests/**/bin/
+tests/**/obj/
+
+# Runtime-generated data and local configuration
+BepInEx/
+characters_local/
+backups/
+*.cfg
+*.log
+
+# Operating system files
+Thumbs.db
+Desktop.ini
+.DS_Store
