@@ -1,6 +1,6 @@
 # Furious Server Characters
 
-A BepInEx plugin for Valheim that keeps player characters on the server, so character progress does not depend on a client's local character file. This project is based on [Smoothbrain's ServerCharacters project](https://github.com/blaxxun-boop/ServerCharacters), originally published through [Smoothbrain's Thunderstore profile](https://thunderstore.io/c/valheim/p/Smoothbrain/).
+A BepInEx plugin for Valheim that keeps player characters on the server, so character progress does not depend on a client's local character file. This project is based on [Smoothbrain's ServerCharacters project](https://github.com/blaxxun-boop/ServerCharacters).
 
 Current version: **1.4.55**
 
@@ -49,9 +49,17 @@ During an unexpected disconnect, the server uses the newest full snapshot when o
 
 ### Logout and server shutdown
 
-Normal character saves, logout, and the final save requested during server shutdown take priority over the two-second inventory-update interval.
+Normal character saves, logout, quit, and the final save requested during server shutdown take priority over the two-second inventory-update interval.
+
+Logout and quit saves are identified separately from ordinary saves. The server stores the final profile but does not send a `ProfileSaved` acknowledgement for `Logout` or `Quit`, because the client connection is already ending. Ordinary saves and server-requested shutdown saves keep the acknowledgement flow used for synchronization and recovery.
 
 When the server is stopped with Ctrl+C, the plugin asks connected clients for one final character save before allowing Valheim's native shutdown to continue. If no players are connected and no disconnected character save is pending, native shutdown continues immediately.
+
+### AFK protection
+
+The optional `AFK Kick Timer` applies to clients only; the dedicated server itself is never kicked. When enabled, the client-side monitor samples activity once per second and logs out inactive players after the configured number of minutes. A value of `0` disables the feature, and the accepted range is `0–30` minutes.
+
+Activity is recorded when the player moves in the world, moves the mouse, or uses an input button. Players seated on or standing inside a boat, including a stationary boat, and players lying in a bed are always treated as active. Administrators are subject to the same AFK behavior as other players.
 
 ## Default intervals and values
 
@@ -76,7 +84,7 @@ BepInEx/config/furiousservercharacters.cfg
 ### `1 - General`
 
 - `Lock Configuration`: locks synchronized settings so they can only be managed by the server.
-- `AFK Kick Timer`: disconnects inactive players, including administrators. `0` disables it. World-position movement and mouse movement count as activity. Players seated on or standing inside a boat, or lying in a bed, are always considered active, even when stationary.
+- `AFK Kick Timer`: logs out inactive clients after the configured number of minutes. Allowed range: 0–30 minutes; `0` disables it. World-position movement, mouse movement, input buttons, being on or inside a boat, and lying in a bed count as activity. The dedicated server is excluded, but administrators are not exempt.
 - `Login Message`: global message shown when a player joins. Leave empty to disable it.
 - `Diagnostic Logging`: when enabled, logs character transfer direction, event, peer, revision, size, and compression at `Message` level. Character contents are never logged.
 
@@ -157,6 +165,5 @@ The resulting DLL is written to `bin/Release/FuriousServerCharacters.dll`. `Skip
 This project is an adaptation and continuation of the work by **Smoothbrain** / **blaxxun-boop**:
 
 - [Original GitHub repository](https://github.com/blaxxun-boop/ServerCharacters)
-- [Smoothbrain on Thunderstore](https://thunderstore.io/c/valheim/p/Smoothbrain/)
 
 Review the original project's license and notices before redistributing modified builds.
