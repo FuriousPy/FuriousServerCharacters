@@ -1,8 +1,8 @@
-# Server Characters
+# Furious Server Characters
 
 A BepInEx plugin for Valheim that keeps player characters on the server, so character progress does not depend on a client's local character file. This project is based on [Smoothbrain's ServerCharacters project](https://github.com/blaxxun-boop/ServerCharacters), originally published through [Smoothbrain's Thunderstore profile](https://thunderstore.io/c/valheim/p/Smoothbrain/).
 
-Current version: **1.4.46**
+Current version: **1.4.55**
 
 ## What it does
 
@@ -63,20 +63,22 @@ When the server is stopped with Ctrl+C, the plugin asks connected clients for on
 | Character backups retained | `2` | files | Maximum backup files kept per character. |
 | Minimum backup interval | `30` | minutes | Prevents frequent or identical backup files. |
 | `AFK Kick Timer` | `0` | minutes | Disabled by default; `0` disables AFK kicking. |
+| `Diagnostic Logging` | `Off` | toggle | Optional `Message`-level transfer diagnostics; payload contents are never logged. |
 
 ## Configuration
 
 The configuration file is created at:
 
 ```text
-BepInEx/config/org.bepinex.plugins.servercharacters.cfg
+BepInEx/config/furiousservercharacters.cfg
 ```
 
 ### `1 - General`
 
 - `Lock Configuration`: locks synchronized settings so they can only be managed by the server.
-- `AFK Kick Timer`: disconnects inactive players, including administrators. `0` disables it.
+- `AFK Kick Timer`: disconnects inactive players, including administrators. `0` disables it. World-position movement and mouse movement count as activity. Players seated on or standing inside a boat, or lying in a bed, are always considered active, even when stationary.
 - `Login Message`: global message shown when a player joins. Leave empty to disable it.
+- `Diagnostic Logging`: when enabled, logs character transfer direction, event, peer, revision, size, and compression at `Message` level. Character contents are never logged.
 
 ### `2 - Save Files`
 
@@ -148,7 +150,7 @@ The project targets .NET Framework 4.8 and uses the locally installed Valheim as
   ServerCharacters.csproj /t:Build /p:Configuration=Release /p:SkipDeploy=true
 ```
 
-The resulting DLL is written to `bin/Release/ServerCharacters.dll`. `SkipDeploy=true` prevents the build from copying it into the game installation automatically.
+The resulting DLL is written to `bin/Release/FuriousServerCharacters.dll`. `SkipDeploy=true` prevents the build from copying it into the game installation automatically.
 
 ## Credits and license
 

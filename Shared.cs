@@ -18,6 +18,8 @@ public static class Shared
 
 	public static IEnumerable<bool> sendCompressedDataToPeer(ZNetPeer peer, string eventname, byte[] packageArray, Action<bool>? completed = null, double timeoutSeconds = 30, bool compressed = true)
 	{
+		if (eventname.IndexOf("PlayerProfile", StringComparison.Ordinal) >= 0 || eventname.IndexOf("PlayerSnapshot", StringComparison.Ordinal) >= 0 || eventname.IndexOf("PlayerInventory", StringComparison.Ordinal) >= 0 || eventname.IndexOf("PlayerDied", StringComparison.Ordinal) >= 0)
+			ServerCharacters.LogDiagnostic($"Character transfer send event={eventname} peer={peer.m_uid} bytes={packageArray.Length} compressed={compressed}");
 		IEnumerator<bool>? sender = null;
 		try
 		{

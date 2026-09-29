@@ -1,0 +1,9 @@
+{
+  "name": "FuriousServerCharacters",
+  "version_number": "1.4.55",
+  "website_url": "https://github.com/FuriousPy/FuriousServerCharacters",
+  "description": "Server-authoritative Valheim character persistence with recovery for unexpected disconnects.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2350"
+  ]
+}

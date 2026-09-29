@@ -22,6 +22,10 @@ backups/
 *.cfg
 *.log
 
+# Generated Thunderstore package contents
+Thunderstore/staging/
+Thunderstore/*.zip
+
 # Operating system files
 Thumbs.db
 Desktop.ini

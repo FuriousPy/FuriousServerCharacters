@@ -12,7 +12,7 @@ $resolver = [System.ResolveEventHandler] {
 try {
     $harmonyAssembly = [System.Reflection.Assembly]::LoadFrom((Join-Path $taskBin '0Harmony.dll'))
     $gameAssembly = [System.Reflection.Assembly]::LoadFrom((Join-Path $taskBin 'assembly_valheim.dll'))
-    $plugin = [System.Reflection.Assembly]::LoadFrom((Join-Path $taskBin 'ServerCharacters.dll'))
+    $plugin = [System.Reflection.Assembly]::LoadFrom((Join-Path $taskBin 'FuriousServerCharacters.dll'))
     $shared = $plugin.GetType('ServerCharacters.Shared', $true)
     $flags = [System.Reflection.BindingFlags]'Public,NonPublic,Static'
     $original = $shared.GetMethod('SerializeProfileInMemory', $flags)

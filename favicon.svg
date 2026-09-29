@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#1d3023"/>
+      <stop offset="1" stop-color="#090d0b"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#f6d58d"/>
+      <stop offset="1" stop-color="#c38432"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Escudo de ChiNortheim -->
+  <path d="M32 3 55 13v17c0 15-8.7 25.5-23 31C17.7 55.5 9 45 9 30V13Z"
+        fill="url(#bg)" stroke="url(#gold)" stroke-width="3"/>
+  <path d="M32 8 50 16v14c0 11.8-6.3 20.4-18 25.5C20.3 50.4 14 41.8 14 30V16Z"
+        fill="none" stroke="#efc876" stroke-opacity=".28"/>
+
+  <!-- C angular inspirada en trazos rúnicos -->
+  <path d="M43 20 36 15H24l-7 7v20l7 7h12l7-5-5-6-5 4h-6l-3-3V25l3-3h6l5 4Z"
+        fill="url(#gold)"/>
+  <circle cx="32" cy="32" r="2" fill="#142219"/>
+</svg>

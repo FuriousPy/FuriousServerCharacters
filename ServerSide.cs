@@ -330,6 +330,8 @@ public static class ServerSide
 				if (!__instance.IsServer()) return;
 
 				peer.m_rpc.Register("ServerCharacters PlayerProfile", ReceiveUpdate((rpc, data, revision, request) => onReceivedProfile(rpc, data, revision, request)));
+				peer.m_rpc.Register("ServerCharacters PlayerProfileLogout", ReceiveUpdate((rpc, data, revision, request) => onReceivedProfile(rpc, data, revision, request, false, "Logout")));
+				peer.m_rpc.Register("ServerCharacters PlayerProfileQuit", ReceiveUpdate((rpc, data, revision, request) => onReceivedProfile(rpc, data, revision, request, false, "Quit")));
 				peer.m_rpc.Register("ServerCharacters CheckSignature", Shared.receiveCompressedFromPeer(onReceivedSignature));
 				peer.m_rpc.Register("ServerCharacters PlayerInventory", ReceiveUpdate((rpc, data, revision, request) => onReceivedInventory(rpc, data, revision), compressed: false));
 				peer.m_rpc.Register("ServerCharacters PlayerSnapshot", ReceiveUpdate((rpc, data, revision, request) => onReceivedSnapshot(rpc, data, revision)));
@@ -366,12 +368,13 @@ public static class ServerSide
 			}
 		}
 
-		private static PlayerProfile? onReceivedProfile(ZRpc peerRpc, byte[] profileData, long revision, string request)
+		private static PlayerProfile? onReceivedProfile(ZRpc peerRpc, byte[] profileData, long revision, string request, bool acknowledge = true, string reason = "NormalSave")
 		{
 			ReceiveState state = received.GetOrCreateValue(peerRpc);
 			if (revision <= state.Profile) return null;
 			ZNetPeer? activePeer = ZNet.instance?.GetPeer(peerRpc);
 			if (activePeer == null) return null;
+			ServerCharacters.LogDiagnostic($"Character transfer receive event=PlayerProfile reason={reason} peer={activePeer.m_uid} revision={revision} bytes={profileData.Length}");
 			PlayerProfile profile = new(fileSource: FileHelpers.FileSource.Local);
 			if (!profile.LoadPlayerProfileFromBytes(profileData))
 			{
@@ -414,11 +417,15 @@ public static class ServerSide
 			MarkShutdownProfileSaved(peerRpc, request);
 			try
 			{
+				if (acknowledge && peerRpc.GetSocket()?.IsConnected() == true)
+				{
 				ZPackage ack = new();
 				ack.Write(revision);
 				byte[] savedBytes = profile.LoadPlayerDataFromDisk()?.GetArray() ?? throw new IOException("Saved profile could not be read for acknowledgement.");
 				using (SHA512 hash = SHA512.Create()) ack.Write(hash.ComputeHash(savedBytes));
-				peerRpc.Invoke("ServerCharacters ProfileSaved", ack);
+				if (peerRpc.GetSocket()?.IsConnected() == true)
+					peerRpc.Invoke("ServerCharacters ProfileSaved", ack);
+				}
 			}
 			catch (Exception e) { ServerCharacters.logger.LogWarning($"Profile saved but acknowledgement failed: {e}"); }
 			Utils.Log($"Saved player profile data for {profile.m_filename}");
@@ -436,6 +443,7 @@ public static class ServerSide
 			}
 			Inventories[Utils.ProfileName.fromPeer(peer)] = inventoryData;
 			state.Inventory = revision;
+			ServerCharacters.LogDiagnostic($"Character transfer receive event=PlayerInventory peer={peer.m_uid} revision={revision} bytes={inventoryData.Length} compressed=false");
 		}
 
 		private static void onReceivedSnapshot(ZRpc peerRpc, byte[] profileData, long revision)
@@ -459,6 +467,7 @@ public static class ServerSide
 
 				DisconnectProtectionSnapshots[Utils.ProfileName.fromPeer(peer)] = profileData.ToArray();
 				state.Snapshot = revision;
+				ServerCharacters.LogDiagnostic($"Character transfer receive event=PlayerSnapshot peer={peer.m_uid} revision={revision} bytes={profileData.Length}");
 				if (state.CoversInventory(revision)) Inventories.Remove(Utils.ProfileName.fromPeer(peer));
 			}
 			catch (Exception e)
@@ -500,9 +509,23 @@ public static class ServerSide
 
 			byte[]? currentBytes = profile.LoadPlayerDataFromDisk()?.GetArray();
 			using SHA512 baselineHasher = SHA512.Create();
-			if (currentBytes == null || !baselineHasher.ComputeHash(currentBytes).SequenceEqual(baseline))
+			PlayerProfile currentProfile = new();
+			if (currentBytes == null || !currentProfile.LoadPlayerProfileFromBytes(currentBytes) || Shared.CharacterNameIsForbidden(currentProfile.GetName()))
+			{
+				ServerCharacters.logger.LogWarning($"Could not validate the current server profile for {profile.m_filename}; emergency backup was retained.");
+				return;
+			}
+			byte[] currentHash = baselineHasher.ComputeHash(currentBytes);
+			if (!currentHash.SequenceEqual(baseline))
 			{
 				Utils.Log($"Emergency backup for {profile.m_filename} conflicts with the current server profile; automatic restore was skipped.");
+				if (peerRpc.GetSocket()?.IsConnected() == true)
+				{
+					ZPackage notice = new();
+					notice.Write(currentProfile.GetName());
+					notice.Write(currentHash);
+					peerRpc.Invoke("ServerCharacters EmergencyObsolete", notice);
+				}
 				return;
 			}
 

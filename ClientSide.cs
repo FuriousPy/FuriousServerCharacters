@@ -27,7 +27,11 @@ public static class ClientSide
 	private static PendingProfileSend? pendingProfileSend;
 	private static long captureRevision;
 	private static string shutdownRequest = "";
+	private static string finalProfileEvent = "";
 	private static byte[] recoveryBaseline = Array.Empty<byte>();
+	private static byte[] loadedServerProfileHash = Array.Empty<byte>();
+	private static byte[] obsoleteBackupProfileHash = Array.Empty<byte>();
+	private static string obsoleteBackupCharacter = "";
 	private static long acknowledgedRevision;
 
 	private static byte[] WrapUpdate(byte[] data, string request = "")
@@ -80,7 +84,11 @@ public static class ClientSide
 		serverEncryptionTime = 0;
 		captureRevision = acknowledgedRevision = 0;
 		shutdownRequest = "";
+		finalProfileEvent = "";
 		recoveryBaseline = Array.Empty<byte>();
+		loadedServerProfileHash = Array.Empty<byte>();
+		obsoleteBackupProfileHash = Array.Empty<byte>();
+		obsoleteBackupCharacter = "";
 		nextDisconnectProtectionSnapshot = 0;
 		PatchInventoryChanged.Reset();
 	}
@@ -89,6 +97,8 @@ public static class ClientSide
 	{
 		ZNetPeer? peer = ZNet.instance?.GetServerPeer();
 		if (!serverCharacter || peer?.IsReady() != true) return;
+		if (!snapshot && eventName == "ServerCharacters PlayerProfile" && shutdownRequest.Length == 0 && finalProfileEvent.Length != 0)
+			eventName = finalProfileEvent;
 		data = WrapUpdate(data, snapshot ? "" : shutdownRequest);
 		PendingProfileSend packet = new(peer, data, eventName, snapshot);
 		if (forceSynchronousSaving)
@@ -244,6 +254,7 @@ public static class ClientSide
 		[UsedImplicitly]
 		private static void Prefix()
 		{
+			if (finalProfileEvent.Length == 0) finalProfileEvent = "ServerCharacters PlayerProfileLogout";
 			forceSynchronousSaving = true;
 		}
 
@@ -358,6 +369,19 @@ public static class ClientSide
 				peer.m_rpc.Register<ZPackage>("ServerCharacters KeyExchange", receiveEncryptionKeyFromServer);
 				peer.m_rpc.Register<string>("ServerCharacters PrepareShutdownSave", onPrepareShutdownSave);
 				peer.m_rpc.Register("ServerCharacters EmergencyRestored", rpc => cleanEmergencyBackup());
+				peer.m_rpc.Register<ZPackage>("ServerCharacters EmergencyObsolete", (rpc, notice) =>
+				{
+					try
+					{
+						string character = notice.ReadString();
+						byte[] hash = notice.ReadByteArray();
+						if (hash.Length != 64) return;
+						obsoleteBackupCharacter = character;
+						obsoleteBackupProfileHash = hash;
+						CleanObsoleteEmergencyBackup();
+					}
+					catch (Exception e) { ServerCharacters.logger.LogWarning($"Could not process obsolete emergency-backup notice: {e}"); }
+				});
 				peer.m_rpc.Register<ZPackage>("ServerCharacters ProfileSaved", (rpc, ack) =>
 				{
 					try
@@ -455,8 +479,19 @@ public static class ClientSide
 			Game.instance.m_playerProfile = profile;
 			using (SHA512 hash = SHA512.Create()) recoveryBaseline = hash.ComputeHash(profileData);
 
-			// A normal login does not prove that the emergency backup was restored.
-			// Keep it until the server explicitly confirms successful recovery.
+			loadedServerProfileHash = recoveryBaseline;
+			CleanObsoleteEmergencyBackup();
+		}
+	}
+
+	private static void CleanObsoleteEmergencyBackup()
+	{
+		// Either RPC may arrive first. Only discard after loading the exact validated server profile.
+		if (loadedServerProfileHash.Length == 64 && obsoleteBackupProfileHash.Length == 64 &&
+		    string.Equals(Game.instance.m_playerProfile.GetName(), obsoleteBackupCharacter, StringComparison.OrdinalIgnoreCase) &&
+		    loadedServerProfileHash.SequenceEqual(obsoleteBackupProfileHash))
+		{
+			cleanEmergencyBackup();
 		}
 	}
 
@@ -793,6 +828,7 @@ public static class ClientSide
 
 			if (serverCharacter)
 			{
+				if (finalProfileEvent.Length == 0) finalProfileEvent = "ServerCharacters PlayerProfileLogout";
 				try
 				{
 					forceSynchronousSaving = true;
@@ -816,6 +852,7 @@ public static class ClientSide
 		[UsedImplicitly]
 		private static void Prefix()
 		{
+			finalProfileEvent = "ServerCharacters PlayerProfileQuit";
 			forceSynchronousSaving = true;
 		}
 	}
@@ -825,6 +862,7 @@ public static class ClientSide
 	{
 		private static void Prefix()
 		{
+			finalProfileEvent = "ServerCharacters PlayerProfileQuit";
 			try
 			{
 				if (ZNet.m_onlineBackend == OnlineBackendType.PlayFab)
@@ -918,6 +956,7 @@ public static class ClientSide
 		[UsedImplicitly]
 		private static void Prefix()
 		{
+			if (finalProfileEvent.Length == 0) finalProfileEvent = "ServerCharacters PlayerProfileLogout";
 			doEmergencyBackup = ZNet.GetConnectionStatus() != ZNet.ConnectionStatus.Connecting && ZNet.GetConnectionStatus() != ZNet.ConnectionStatus.Connected && !Game.instance.IsShuttingDown();
 			if (doEmergencyBackup)
 			{
@@ -1099,10 +1138,15 @@ public static class ClientSide
 	[HarmonyPatch(typeof(Player), nameof(Player.SetLocalPlayer))]
 	private static class MonitorPlayerActivity
 	{
+		private const float PositionActivityThreshold = 0.05f;
+		private const float MouseActivityThreshold = 2f;
 		private static Coroutine? activityCoroutine;
 		private static Player? activityPlayer;
 		private static long lastActivity;
 		private static int generation;
+		private static Vector3 lastWorldPosition;
+		private static Vector3 lastMousePosition;
+		private static bool hasActivitySample;
 
 		public static void RecordActivity() => lastActivity = System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -1113,7 +1157,12 @@ public static class ClientSide
 			{
 				if (activityCoroutine != null && activityPlayer != null) activityPlayer.StopCoroutine(activityCoroutine);
 			}
-			finally { activityCoroutine = null; activityPlayer = null; }
+		finally
+		{
+			activityCoroutine = null;
+			activityPlayer = null;
+			hasActivitySample = false;
+		}
 		}
 
 		private static IEnumerator MeasureActivity(Player owner, int run)
@@ -1122,6 +1171,15 @@ public static class ClientSide
 			{
 				yield return new WaitForSecondsRealtime(1);
 				if (run != generation || owner == null || owner != Player.m_localPlayer) yield break;
+				Vector3 worldPosition = owner.transform.position;
+				Vector3 mousePosition = UnityEngine.Input.mousePosition;
+				if (!hasActivitySample || Vector3.Distance(worldPosition, lastWorldPosition) >= PositionActivityThreshold || (mousePosition - lastMousePosition).sqrMagnitude >= MouseActivityThreshold * MouseActivityThreshold)
+					RecordActivity();
+				if (owner.IsAttachedToShip() || owner.InNumShipVolumes > 0 || owner.InBed())
+					RecordActivity();
+				lastWorldPosition = worldPosition;
+				lastMousePosition = mousePosition;
+				hasActivitySample = true;
 				int minutes = ServerCharacters.afkKickTimer.Value;
 				if (minutes <= 0 || ZNet.m_isServer) { RecordActivity(); continue; }
 				double elapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - lastActivity) / (double)System.Diagnostics.Stopwatch.Frequency;
@@ -1146,6 +1204,9 @@ public static class ClientSide
 			{
 				Stop();
 				RecordActivity();
+				lastWorldPosition = __instance.transform.position;
+				lastMousePosition = UnityEngine.Input.mousePosition;
+				hasActivitySample = true;
 				PatchInventoryChanged.Reset();
 				activityPlayer = __instance;
 				activityCoroutine = __instance.StartCoroutine(MeasureActivity(__instance, generation));

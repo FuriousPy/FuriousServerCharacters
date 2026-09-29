@@ -4,11 +4,11 @@ using System.Runtime.InteropServices;
 // General Information about an assembly is controlled through the following 
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("ServerCharacters")]
-[assembly: AssemblyDescription("https://valheim.thunderstore.io/package/Smoothbrain/ServerCharacters")]
+[assembly: AssemblyTitle("FuriousServerCharacters")]
+[assembly: AssemblyDescription("https://github.com/FuriousPy/FuriousServerCharacters")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyProduct("ServerCharacters")]
+[assembly: AssemblyProduct("FuriousServerCharacters")]
 [assembly: AssemblyCopyright("Copyright ©  2021")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
@@ -32,4 +32,4 @@ using System.Runtime.InteropServices;
 // by using the '*' as shown below:
 // [assembly: AssemblyVersion("1.0.*")]
 [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.4.46.0")]
+[assembly: AssemblyFileVersion("1.4.55.0")]

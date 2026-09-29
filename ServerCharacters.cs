@@ -14,11 +14,12 @@ namespace ServerCharacters;
 
 [BepInPlugin(ModGUID, ModName, ModVersion)]
 [BepInIncompatibility("org.bepinex.plugins.valheim_plus")]
+[BepInIncompatibility("org.bepinex.plugins.servercharacters")]
 public class ServerCharacters : BaseUnityPlugin
 {
-	private const string ModName = "Server Characters";
-	private const string ModVersion = "1.4.46";
-	private const string ModGUID = "org.bepinex.plugins.servercharacters";
+	private const string ModName = "Furious Server Characters";
+	private const string ModVersion = "1.4.55";
+	private const string ModGUID = "furiousservercharacters";
 
 	public static ServerCharacters selfReference = null!;
 	public static ManualLogSource logger => selfReference.Logger;
@@ -46,6 +47,7 @@ public class ServerCharacters : BaseUnityPlugin
 	public static ConfigEntry<string> serverKey = null!;
 	public static ConfigEntry<Intro> newCharacterIntro = null!;
 	public static ConfigEntry<Toggle> storePoison = null!;
+	public static ConfigEntry<Toggle> diagnosticLogging = null!;
 
 	public static readonly CustomSyncedValue<string> playerTemplate = new(configSync, "PlayerTemplate", readCharacterTemplate());
 
@@ -62,6 +64,15 @@ public class ServerCharacters : BaseUnityPlugin
 	}
 
 	private ConfigEntry<T> config<T>(string group, string name, T value, string description, bool synchronizedSetting = true) => config(group, name, value, new ConfigDescription(description), synchronizedSetting);
+
+	public static void LogDiagnostic(string message)
+	{
+		try
+		{
+			if (diagnosticLogging?.Value == Toggle.On) logger.LogMessage(message);
+		}
+		catch (Exception e) { logger.LogError($"Could not write diagnostic message: {e.Message}"); }
+	}
 
 	private static void ApplyAutoSaveInterval()
 	{
@@ -102,6 +113,7 @@ public class ServerCharacters : BaseUnityPlugin
 		newCharacterIntro = config("3 - First Login", "Intro", Intro.ValkyrieAndIntro, new ConfigDescription("Sets the kind of intro new characters will get."));
 
 		serverKey = config("4 - Other", "Server key", "", new ConfigDescription("DO NOT TOUCH THIS! DO NOT SHARE THIS! Encryption key used for emergency profile backups. DO NOT SHARE THIS! DO NOT TOUCH THIS!", null, new ConfigurationManagerAttributes()), false);
+		diagnosticLogging = config("4 - Other", "Diagnostic Logging", Toggle.Off, "If on, logs character data transfers at Message level without logging the character contents.");
 
 		Assembly assembly = Assembly.GetExecutingAssembly();
 		harmony.PatchAll(assembly);

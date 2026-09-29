@@ -8,10 +8,10 @@ $resolver = [System.ResolveEventHandler] {
 }
 [AppDomain]::CurrentDomain.add_AssemblyResolve($resolver)
 try {
-    foreach ($dependency in @('netstandard.dll', 'UnityEngine.CoreModule.dll', 'assembly_utils.dll', 'assembly_valheim.dll', 'ServerCharacters.dll')) {
+    foreach ($dependency in @('netstandard.dll', 'UnityEngine.CoreModule.dll', 'assembly_utils.dll', 'assembly_valheim.dll', 'FuriousServerCharacters.dll')) {
         [System.Reflection.Assembly]::LoadFrom((Join-Path $taskBin $dependency)) | Out-Null
     }
-    Add-Type -ReferencedAssemblies @((Join-Path $taskBin 'assembly_valheim.dll'), (Join-Path $taskBin 'assembly_utils.dll'), (Join-Path $taskBin 'ServerCharacters.dll'), (Join-Path $taskBin 'UnityEngine.CoreModule.dll'), (Join-Path $taskBin 'netstandard.dll'), 'System.Core.dll', 'System.IO.Compression.dll') -TypeDefinition @'
+    Add-Type -ReferencedAssemblies @((Join-Path $taskBin 'assembly_valheim.dll'), (Join-Path $taskBin 'assembly_utils.dll'), (Join-Path $taskBin 'FuriousServerCharacters.dll'), (Join-Path $taskBin 'UnityEngine.CoreModule.dll'), (Join-Path $taskBin 'netstandard.dll'), 'System.Core.dll', 'System.IO.Compression.dll') -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.IO;
