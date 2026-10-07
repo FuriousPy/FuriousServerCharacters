@@ -2,7 +2,7 @@
 
 A BepInEx plugin for Valheim that keeps player characters on the server, so character progress does not depend on a client's local character file. This project is based on [Smoothbrain's ServerCharacters project](https://github.com/blaxxun-boop/ServerCharacters).
 
-Current version: **1.4.55**
+Current version: **1.4.56**
 
 ## What it does
 
@@ -112,8 +112,9 @@ Valheim's native character profile retains its own character data, including ski
 
 - `Rested`, preserving its remaining duration without resetting it.
 - `Poison`, when `Store poison debuff` is enabled.
+- Finite-duration potion effects and player-activated buffs, preserving their remaining duration. Stateful effects such as Protection Staff shields also preserve their remaining absorption.
 
-Temporary effects that depend on the world, equipped items, or external conditions are not restored indiscriminately.
+Effects recalculated from the world, equipped items, weather, shelter, encumbrance, or death state are not restored.
 
 ## Server files
 

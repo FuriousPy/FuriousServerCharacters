@@ -46,6 +46,23 @@ RestedState.Store(restedData, 500, false);
 Check(!RestedState.Take(restedData, true, out _) && !restedData.ContainsKey(RestedState.Key), "dead player cannot restore Rested");
 restedData[RestedState.Key] = "invalid";
 Check(!RestedState.Take(restedData, false, out _), "malformed Rested ignored");
+var buffData = new Dictionary<string, string>();
+var originalBuffs = new List<BuffState.Entry>
+{
+    new() { Hash = 123, Remaining = 42.5f, Variant = 3 },
+    new() { Hash = 456, Remaining = 17.25f, StateKind = BuffState.Kind.Shield, State = new[] { 200f, 75f } },
+    new() { Hash = 789, Remaining = 9f, StateKind = BuffState.Kind.Stats, State = new[] { 1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f } },
+};
+BuffState.Store(buffData, originalBuffs, false);
+Check(BuffState.Take(buffData, false, out var restoredBuffs) && restoredBuffs.Count == 3, "player buffs round-trip");
+Check(restoredBuffs[0].Hash == 123 && restoredBuffs[0].Remaining == 42.5f && restoredBuffs[0].Variant == 3, "generic buff state preserved");
+Check(restoredBuffs[1].StateKind == BuffState.Kind.Shield && restoredBuffs[1].State.SequenceEqual(new[] { 200f, 75f }), "shield absorption preserved");
+Check(restoredBuffs[2].StateKind == BuffState.Kind.Stats && restoredBuffs[2].State.SequenceEqual(new[] { 1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f }), "potion runtime state preserved");
+Check(!BuffState.Take(buffData, false, out _), "player buff snapshot consumed only once");
+BuffState.Store(buffData, originalBuffs, true);
+Check(!buffData.ContainsKey(BuffState.Key), "dead player cannot save buffs");
+buffData[BuffState.Key] = "malformed";
+Check(!BuffState.Take(buffData, false, out _) && !buffData.ContainsKey(BuffState.Key), "malformed buff snapshot ignored and consumed");
 new Random(1234).NextBytes(data);
 using (var left = new ShortReads(data, 113))
 using (var right = new ShortReads(data, 701))

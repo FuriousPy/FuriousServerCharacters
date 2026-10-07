@@ -18,7 +18,7 @@ namespace ServerCharacters;
 public class ServerCharacters : BaseUnityPlugin
 {
 	private const string ModName = "Furious Server Characters";
-	private const string ModVersion = "1.4.55";
+	private const string ModVersion = "1.4.56";
 	private const string ModGUID = "furiousservercharacters";
 
 	public static ServerCharacters selfReference = null!;

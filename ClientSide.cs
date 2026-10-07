@@ -310,8 +310,162 @@ public static class ClientSide
 	{
 		private static void Prefix(Player __instance)
 		{
-			try { __instance.m_customData.Remove(RestedState.Key); }
-			catch (Exception e) { ServerCharacters.logger.LogWarning($"Could not clear saved Rested on death: {e}"); }
+			try
+			{
+				__instance.m_customData.Remove(RestedState.Key);
+				__instance.m_customData.Remove(BuffState.Key);
+			}
+			catch (Exception e) { ServerCharacters.logger.LogWarning($"Could not clear saved status effects on death: {e}"); }
+		}
+	}
+
+	private static readonly HashSet<int> RecalculatedStatusEffects = new(new[]
+	{
+		"Rested", "Encumbered", "SoftDeath", "Wet", "Shelter", "CampFire", "Resting", "Cold", "Freezing",
+		"Burning", "Frost", "Lightning", "Poison", "Smoked", "Spirit", "Tared", "CorpseRun", "NoSkillDrain",
+	}.Select(name => name.GetStableHashCode()));
+
+	private static float FiniteOrZero(float value) => BuffState.Valid(value) ? value : 0;
+
+	private static float[] CaptureStatsState(SE_Stats stats)
+	{
+		float staminaDuration = Math.Max(0, stats.m_staminaOverTimeDuration - stats.m_time);
+		float staminaAmount = stats.m_staminaOverTimeDuration > 0
+			? stats.m_staminaOverTime * staminaDuration / stats.m_staminaOverTimeDuration : 0;
+		float eitrDuration = Math.Max(0, stats.m_eitrOverTimeDuration - stats.m_time);
+		float eitrAmount = stats.m_eitrOverTimeDuration > 0
+			? stats.m_eitrOverTime * eitrDuration / stats.m_eitrOverTimeDuration : 0;
+		return new[]
+		{
+			FiniteOrZero(stats.m_tickTimer), FiniteOrZero(stats.m_healthOverTimeTimer),
+			FiniteOrZero(stats.m_healthOverTimeTicks), FiniteOrZero(stats.m_healthOverTimeTickHP),
+			FiniteOrZero(staminaAmount), FiniteOrZero(staminaDuration),
+			FiniteOrZero(eitrAmount), FiniteOrZero(eitrDuration),
+		};
+	}
+
+	private static BuffState.Entry CaptureBuff(StatusEffect effect, float remaining)
+	{
+		BuffState.Entry saved = new()
+		{
+			Hash = effect.NameHash(),
+			Remaining = remaining,
+			Variant = effect.m_hitVariant,
+		};
+		switch (effect)
+		{
+			case SE_Shield shield:
+				saved.StateKind = BuffState.Kind.Shield;
+				saved.State = new[] { FiniteOrZero(shield.m_totalAbsorbDamage), FiniteOrZero(shield.m_damage) };
+				break;
+			case SE_Puke puke:
+				saved.StateKind = BuffState.Kind.Puke;
+				saved.State = new[] { FiniteOrZero(puke.m_removeTimer) };
+				break;
+			case SE_Stats stats:
+				saved.StateKind = BuffState.Kind.Stats;
+				saved.State = CaptureStatsState(stats);
+				break;
+			case SE_React react:
+				saved.StateKind = BuffState.Kind.React;
+				saved.State = new[] { (float)react.m_itemLevel };
+				break;
+		}
+		return saved;
+	}
+
+	[HarmonyPatch(typeof(Player), nameof(Player.Save))]
+	private static class StorePlayerBuffs
+	{
+		private static void Prefix(Player __instance)
+		{
+			if (!serverCharacter) return;
+			try
+			{
+				List<BuffState.Entry> saved = new();
+				foreach (StatusEffect effect in __instance.m_seman.GetStatusEffects())
+				{
+					float remaining = effect.m_ttl - effect.m_time;
+					// Indefinite effects generally come from equipment. The named finite effects are environmental or native death state.
+					if (effect.m_ttl <= 0 || remaining <= 0 || !BuffState.Valid(remaining) ||
+						RecalculatedStatusEffects.Contains(effect.NameHash())) continue;
+					saved.Add(CaptureBuff(effect, remaining));
+				}
+				BuffState.Store(__instance.m_customData, saved, __instance.IsDead());
+			}
+			catch (Exception e) { ServerCharacters.logger.LogError($"Could not capture player buffs; character saving will continue: {e}"); }
+		}
+	}
+
+	private static StatusEffect? AddRestoredBuff(Player player, BuffState.Entry saved)
+	{
+		StatusEffect? current = player.m_seman.GetStatusEffect(saved.Hash);
+		if (current != null) return current;
+		StatusEffect? template = ObjectDB.instance?.GetStatusEffect(saved.Hash);
+		if (template == null) return null;
+		// Cloning the template lets us suppress one-shot potion healing during restoration.
+		StatusEffect source = template.Clone();
+		if (source is SE_Stats stats)
+		{
+			stats.m_healthUpFront = 0;
+			stats.m_staminaUpFront = 0;
+			stats.m_eitrUpFront = 0;
+			stats.m_adrenalineUpFront = 0;
+		}
+		try { return player.m_seman.AddStatusEffect(source, false, 0, 0, saved.Variant); }
+		finally { UnityEngine.Object.Destroy(source); }
+	}
+
+	private static void RestoreSpecificState(StatusEffect effect, BuffState.Entry saved)
+	{
+		float[] state = saved.State;
+		if (saved.StateKind == BuffState.Kind.Shield && effect is SE_Shield shield && state.Length >= 2)
+		{
+			shield.m_totalAbsorbDamage = state[0];
+			shield.m_damage = state[1];
+		}
+		else if (saved.StateKind == BuffState.Kind.Stats && effect is SE_Stats stats && state.Length >= 8)
+		{
+			stats.m_tickTimer = state[0];
+			stats.m_healthOverTimeTimer = state[1];
+			stats.m_healthOverTimeTicks = state[2];
+			stats.m_healthOverTimeTickHP = state[3];
+			stats.m_staminaOverTime = state[4];
+			stats.m_staminaOverTimeDuration = state[5];
+			stats.m_eitrOverTime = state[6];
+			stats.m_eitrOverTimeDuration = state[7];
+		}
+		else if (saved.StateKind == BuffState.Kind.React && effect is SE_React react && state.Length >= 1)
+			react.m_itemLevel = (int)state[0];
+		else if (saved.StateKind == BuffState.Kind.Puke && effect is SE_Puke puke && state.Length >= 1)
+			puke.m_removeTimer = state[0];
+	}
+
+	[HarmonyPatch(typeof(Player), nameof(Player.Load))]
+	private static class RestorePlayerBuffs
+	{
+		private static void Postfix(Player __instance)
+		{
+			if (!serverCharacter) return;
+			try
+			{
+				if (__instance.m_nview?.m_zdo == null || !__instance.m_nview.IsOwner() ||
+					!BuffState.Take(__instance.m_customData, __instance.IsDead(), out List<BuffState.Entry> saved)) return;
+				foreach (BuffState.Entry entry in saved)
+				{
+					if (RecalculatedStatusEffects.Contains(entry.Hash)) continue;
+					StatusEffect? effect = AddRestoredBuff(__instance, entry);
+					if (effect == null)
+					{
+						ServerCharacters.logger.LogWarning($"Could not restore status effect {entry.Hash}: it is unavailable.");
+						continue;
+					}
+					effect.m_ttl = entry.Remaining;
+					effect.m_time = 0;
+					RestoreSpecificState(effect, entry);
+				}
+			}
+			catch (Exception e) { ServerCharacters.logger.LogError($"Could not restore player buffs; character loading will continue: {e}"); }
 		}
 	}
 

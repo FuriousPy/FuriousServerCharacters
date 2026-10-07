@@ -145,6 +145,7 @@
         <Compile Include="ProfileBackupStore.cs"/>
         <Compile Include="EmergencySignature.cs"/>
         <Compile Include="RestedState.cs"/>
+		<Compile Include="BuffState.cs"/>
     </ItemGroup>
     <ItemGroup>
         <Content Include="ILRepack.targets"/>

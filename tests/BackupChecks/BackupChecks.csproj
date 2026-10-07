@@ -9,5 +9,6 @@
     <Compile Include="../../ProfileBackupStore.cs" Link="ProfileBackupStore.cs" />
     <Compile Include="../../EmergencySignature.cs" Link="EmergencySignature.cs" />
     <Compile Include="../../RestedState.cs" Link="RestedState.cs" />
+    <Compile Include="../../BuffState.cs" Link="BuffState.cs" />
   </ItemGroup>
 </Project>

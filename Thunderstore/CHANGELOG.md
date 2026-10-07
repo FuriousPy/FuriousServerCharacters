@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.56
+
+- Preserve finite-duration potion effects and player-activated buffs across logout and reconnect.
+- Preserve remaining Protection Staff shield absorption and gradual potion progress without replaying one-shot healing.
+- Exclude environmental, equipment-derived, encumbrance, and death-related effects that Valheim recalculates.
+- Consume saved buff snapshots once and discard them on death or when malformed.
+
 ## 1.4.55
 
 - Exempt players lying in a bed from AFK disconnection.
