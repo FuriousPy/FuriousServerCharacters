@@ -2,7 +2,7 @@
 
 A BepInEx plugin for Valheim that keeps player characters on the server, so character progress does not depend on a client's local character file. This project is based on [Smoothbrain's ServerCharacters project](https://github.com/blaxxun-boop/ServerCharacters).
 
-Current version: **1.4.56**
+Current version: **1.4.57**
 
 ## What it does
 
@@ -53,7 +53,7 @@ Normal character saves, logout, quit, and the final save requested during server
 
 Logout and quit saves are identified separately from ordinary saves. The server stores the final profile but does not send a `ProfileSaved` acknowledgement for `Logout` or `Quit`, because the client connection is already ending. Ordinary saves and server-requested shutdown saves keep the acknowledgement flow used for synchronization and recovery.
 
-When the server is stopped with Ctrl+C, the plugin asks connected clients for one final character save before allowing Valheim's native shutdown to continue. If no players are connected and no disconnected character save is pending, native shutdown continues immediately.
+When the server is stopped with Ctrl+C, the plugin asks connected clients for one final character save before allowing Valheim's native shutdown to continue. The console immediately reports that this work is in progress, warns when another shutdown request arrives, and reports when control returns to Valheim. If no players are connected and no disconnected character save is pending, native shutdown continues immediately.
 
 ### AFK protection
 
@@ -110,9 +110,9 @@ BepInEx/config/furiousservercharacters.cfg
 
 Valheim's native character profile retains its own character data, including skills and the post-death no-skill-drain protection. This plugin also explicitly persists:
 
-- `Rested`, preserving its remaining duration without resetting it.
-- `Poison`, when `Store poison debuff` is enabled.
-- Finite-duration potion effects and player-activated buffs, preserving their remaining duration. Stateful effects such as Protection Staff shields also preserve their remaining absorption.
+- Finite-duration potion effects and player-activated buffs, preserving their remaining duration. This includes `Rested`, `Poison` when `Store poison debuff` is enabled, and stateful effects such as Protection Staff shields with their remaining absorption.
+
+Legacy Rested and Poison fields and the `1.4.56` buff snapshot format are migrated automatically when a character loads. New saves write only the unified, versioned buff snapshot.
 
 Effects recalculated from the world, equipped items, weather, shelter, encumbrance, or death state are not restored.
 

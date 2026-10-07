@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.57
+
+- Store Rested, Poison, potion effects, and player-activated buffs in one versioned snapshot.
+- Automatically migrate legacy Rested and Poison fields and the `1.4.56` snapshot format when a character loads.
+- Write only the unified format after migration while preserving support for older character saves.
+- Restore cloned effects without destroying their shared `ObjectDB` definitions, preserving both restored and environment-applied effects.
+- Print clear console notices when Ctrl+C starts, repeats, and finishes the coordinated character-save phase.
+- Defer Valheim's native `OnApplicationQuit` teardown until final character saves finish, so networking and builders shut down only once.
+- After persisting final profiles, notify clients, wait briefly for acknowledgement, and send Valheim's native `Disconnect` RPC while networking is still active; clients accept it without a redundant profile save.
+- Normalize the client connection state after a confirmed server shutdown so Valheim does not present the expected native disconnect as a connection error.
+
 ## 1.4.56
 
 - Preserve finite-duration potion effects and player-activated buffs across logout and reconnect.

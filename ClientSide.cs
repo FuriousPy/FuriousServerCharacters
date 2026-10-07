@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -33,6 +32,7 @@ public static class ClientSide
 	private static byte[] obsoleteBackupProfileHash = Array.Empty<byte>();
 	private static string obsoleteBackupCharacter = "";
 	private static long acknowledgedRevision;
+	private static bool serverShutdownConfirmed;
 
 	private static byte[] WrapUpdate(byte[] data, string request = "")
 	{
@@ -89,6 +89,7 @@ public static class ClientSide
 		loadedServerProfileHash = Array.Empty<byte>();
 		obsoleteBackupProfileHash = Array.Empty<byte>();
 		obsoleteBackupCharacter = "";
+		serverShutdownConfirmed = false;
 		nextDisconnectProtectionSnapshot = 0;
 		PatchInventoryChanged.Reset();
 	}
@@ -96,7 +97,7 @@ public static class ClientSide
 	private static void QueueProfile(byte[] data, string eventName, bool snapshot = false)
 	{
 		ZNetPeer? peer = ZNet.instance?.GetServerPeer();
-		if (!serverCharacter || peer?.IsReady() != true) return;
+		if (!serverCharacter || serverShutdownConfirmed || peer?.IsReady() != true) return;
 		if (!snapshot && eventName == "ServerCharacters PlayerProfile" && shutdownRequest.Length == 0 && finalProfileEvent.Length != 0)
 			eventName = finalProfileEvent;
 		data = WrapUpdate(data, snapshot ? "" : shutdownRequest);
@@ -265,55 +266,15 @@ public static class ClientSide
 		}
 	}
 
-	[HarmonyPatch(typeof(Player), nameof(Player.Save))]
-	private static class StoreRested
-	{
-		private static void Prefix(Player __instance)
-		{
-			if (!serverCharacter) return;
-			try
-			{
-				StatusEffect? rested = __instance.m_seman.GetStatusEffect("Rested".GetStableHashCode());
-				RestedState.Store(__instance.m_customData, rested == null ? 0 : rested.m_ttl - rested.m_time, __instance.IsDead());
-			}
-			catch (Exception e) { ServerCharacters.logger.LogError($"Could not capture Rested; character saving will continue: {e}"); }
-		}
-	}
-
-	[HarmonyPatch(typeof(Player), nameof(Player.Load))]
-	private static class RestoreRested
-	{
-		private static void Postfix(Player __instance)
-		{
-			if (!serverCharacter) return;
-			try
-			{
-				if (__instance.m_nview?.m_zdo == null || !__instance.m_nview.IsOwner()) return;
-				if (!RestedState.Take(__instance.m_customData, __instance.IsDead(), out float remaining)) return;
-				StatusEffect? effect = __instance.m_seman.GetStatusEffect("Rested".GetStableHashCode()) ??
-					__instance.m_seman.AddStatusEffect("Rested".GetStableHashCode());
-				if (effect == null)
-				{
-					ServerCharacters.logger.LogWarning("Could not restore Rested: status effect was unavailable.");
-					return;
-				}
-				// Setup computes a fresh comfort duration; replace it with the saved remainder.
-				effect.m_ttl = remaining;
-				effect.m_time = 0;
-			}
-			catch (Exception e) { ServerCharacters.logger.LogError($"Could not restore Rested; character loading will continue: {e}"); }
-		}
-	}
-
 	[HarmonyPatch(typeof(Player), nameof(Player.OnDeath))]
-	private static class ClearSavedRestedOnDeath
+	private static class ClearSavedBuffsOnDeath
 	{
 		private static void Prefix(Player __instance)
 		{
 			try
 			{
-				__instance.m_customData.Remove(RestedState.Key);
 				__instance.m_customData.Remove(BuffState.Key);
+				BuffState.RemoveLegacy(__instance.m_customData);
 			}
 			catch (Exception e) { ServerCharacters.logger.LogWarning($"Could not clear saved status effects on death: {e}"); }
 		}
@@ -321,9 +282,11 @@ public static class ClientSide
 
 	private static readonly HashSet<int> RecalculatedStatusEffects = new(new[]
 	{
-		"Rested", "Encumbered", "SoftDeath", "Wet", "Shelter", "CampFire", "Resting", "Cold", "Freezing",
-		"Burning", "Frost", "Lightning", "Poison", "Smoked", "Spirit", "Tared", "CorpseRun", "NoSkillDrain",
+		"Encumbered", "SoftDeath", "Wet", "Shelter", "CampFire", "Resting", "Cold", "Freezing", "Burning",
+		"Frost", "Lightning", "Smoked", "Spirit", "Tared", "CorpseRun", "NoSkillDrain",
 	}.Select(name => name.GetStableHashCode()));
+	private static readonly int RestedHash = "Rested".GetStableHashCode();
+	private static readonly int PoisonHash = "Poison".GetStableHashCode();
 
 	private static float FiniteOrZero(float value) => BuffState.Valid(value) ? value : 0;
 
@@ -354,6 +317,16 @@ public static class ClientSide
 		};
 		switch (effect)
 		{
+			case SE_Rested:
+				saved.StateKind = BuffState.Kind.Rested;
+				break;
+			case SE_Poison poison:
+				saved.StateKind = BuffState.Kind.Poison;
+				saved.State = new[]
+				{
+					FiniteOrZero(poison.m_timer), FiniteOrZero(poison.m_damageLeft), FiniteOrZero(poison.m_damagePerHit),
+				};
+				break;
 			case SE_Shield shield:
 				saved.StateKind = BuffState.Kind.Shield;
 				saved.State = new[] { FiniteOrZero(shield.m_totalAbsorbDamage), FiniteOrZero(shield.m_damage) };
@@ -388,7 +361,8 @@ public static class ClientSide
 					float remaining = effect.m_ttl - effect.m_time;
 					// Indefinite effects generally come from equipment. The named finite effects are environmental or native death state.
 					if (effect.m_ttl <= 0 || remaining <= 0 || !BuffState.Valid(remaining) ||
-						RecalculatedStatusEffects.Contains(effect.NameHash())) continue;
+						RecalculatedStatusEffects.Contains(effect.NameHash()) ||
+						(effect is SE_Poison && !ServerCharacters.storePoison.GetToggle())) continue;
 					saved.Add(CaptureBuff(effect, remaining));
 				}
 				BuffState.Store(__instance.m_customData, saved, __instance.IsDead());
@@ -412,8 +386,9 @@ public static class ClientSide
 			stats.m_eitrUpFront = 0;
 			stats.m_adrenalineUpFront = 0;
 		}
-		try { return player.m_seman.AddStatusEffect(source, false, 0, 0, saved.Variant); }
-		finally { UnityEngine.Object.Destroy(source); }
+		// StatusEffect.Clone uses MemberwiseClone rather than UnityEngine.Object.Instantiate.
+		// Destroying this shallow copy also destroys the ObjectDB asset referenced by its Unity native pointer.
+		return player.m_seman.AddStatusEffect(source, false, 0, 0, saved.Variant);
 	}
 
 	private static void RestoreSpecificState(StatusEffect effect, BuffState.Entry saved)
@@ -439,6 +414,12 @@ public static class ClientSide
 			react.m_itemLevel = (int)state[0];
 		else if (saved.StateKind == BuffState.Kind.Puke && effect is SE_Puke puke && state.Length >= 1)
 			puke.m_removeTimer = state[0];
+		else if (saved.StateKind == BuffState.Kind.Poison && effect is SE_Poison poison && state.Length >= 3)
+		{
+			poison.m_timer = state[0];
+			poison.m_damageLeft = state[1];
+			poison.m_damagePerHit = state[2];
+		}
 	}
 
 	[HarmonyPatch(typeof(Player), nameof(Player.Load))]
@@ -449,11 +430,14 @@ public static class ClientSide
 			if (!serverCharacter) return;
 			try
 			{
-				if (__instance.m_nview?.m_zdo == null || !__instance.m_nview.IsOwner() ||
-					!BuffState.Take(__instance.m_customData, __instance.IsDead(), out List<BuffState.Entry> saved)) return;
+				if (__instance.m_nview?.m_zdo == null || !__instance.m_nview.IsOwner()) return;
+				BuffState.Take(__instance.m_customData, __instance.IsDead(), out List<BuffState.Entry> saved);
+				BuffState.MergeLegacy(saved, BuffState.TakeLegacy(__instance.m_customData, __instance.IsDead()),
+					RestedHash, PoisonHash, ServerCharacters.storePoison.GetToggle());
 				foreach (BuffState.Entry entry in saved)
 				{
-					if (RecalculatedStatusEffects.Contains(entry.Hash)) continue;
+					if (RecalculatedStatusEffects.Contains(entry.Hash) ||
+						(entry.Hash == PoisonHash && !ServerCharacters.storePoison.GetToggle())) continue;
 					StatusEffect? effect = AddRestoredBuff(__instance, entry);
 					if (effect == null)
 					{
@@ -466,44 +450,6 @@ public static class ClientSide
 				}
 			}
 			catch (Exception e) { ServerCharacters.logger.LogError($"Could not restore player buffs; character loading will continue: {e}"); }
-		}
-	}
-
-	[HarmonyPatch(typeof(Player), nameof(Player.Save))]
-	private static class StorePoisonDebuff
-	{
-		private static void Prefix(Player __instance)
-		{
-			if (ServerCharacters.storePoison.GetToggle())
-			{
-				if (__instance.m_seman.GetStatusEffect("Poison".GetStableHashCode()) is SE_Poison poison && !__instance.IsDead())
-				{
-					__instance.m_customData["ServerCharacters PoisonDamage"] = poison.m_damageLeft.ToString(CultureInfo.InvariantCulture);
-					__instance.m_customData["ServerCharacters PoisonDamageHit"] = poison.m_damagePerHit.ToString(CultureInfo.InvariantCulture);
-					__instance.m_customData["ServerCharacters PoisonTTL"] = poison.m_ttl.ToString(CultureInfo.InvariantCulture);
-				}
-				else
-				{
-					__instance.m_customData.Remove("ServerCharacters PoisonDamage");
-					__instance.m_customData.Remove("ServerCharacters PoisonDamageHit");
-					__instance.m_customData.Remove("ServerCharacters PoisonTTL");
-				}
-			}
-		}
-	}
-
-	[HarmonyPatch(typeof(Player), nameof(Player.Load))]
-	private static class LoadPoisonDebuff
-	{
-		private static void Postfix(Player __instance)
-		{
-			if (__instance.m_nview.m_zdo is not null && ServerCharacters.storePoison.GetToggle() && __instance.m_customData.TryGetValue("ServerCharacters PoisonDamage", out string poisonString) && poisonString != "")
-			{
-				SE_Poison poison = (SE_Poison)__instance.m_seman.AddStatusEffect("Poison".GetStableHashCode());
-				poison.m_damageLeft = float.Parse(__instance.m_customData["ServerCharacters PoisonDamage"], CultureInfo.InvariantCulture);
-				poison.m_damagePerHit = float.Parse(__instance.m_customData["ServerCharacters PoisonDamageHit"], CultureInfo.InvariantCulture);
-				poison.m_ttl = float.Parse(__instance.m_customData["ServerCharacters PoisonTTL"], CultureInfo.InvariantCulture);
-			}
 		}
 	}
 
@@ -522,6 +468,7 @@ public static class ClientSide
 				peer.m_rpc.Register("ServerCharacters PlayerProfile", Shared.receiveCompressedFromPeer(onReceivedProfile));
 				peer.m_rpc.Register<ZPackage>("ServerCharacters KeyExchange", receiveEncryptionKeyFromServer);
 				peer.m_rpc.Register<string>("ServerCharacters PrepareShutdownSave", onPrepareShutdownSave);
+				peer.m_rpc.Register<string>("ServerCharacters ShutdownConfirmed", onServerShutdownConfirmed);
 				peer.m_rpc.Register("ServerCharacters EmergencyRestored", rpc => cleanEmergencyBackup());
 				peer.m_rpc.Register<ZPackage>("ServerCharacters EmergencyObsolete", (rpc, notice) =>
 				{
@@ -570,6 +517,25 @@ public static class ClientSide
 			catch (Exception e)
 			{
 				ServerCharacters.logger.LogError($"Could not initialize Server Characters for the server connection; continuing without emergency-backup restoration: {e}");
+			}
+		}
+
+		private static void onServerShutdownConfirmed(ZRpc peerRpc, string request)
+		{
+			try
+			{
+				if (!serverCharacter || Game.instance == null || string.IsNullOrEmpty(request)) return;
+				serverShutdownConfirmed = true;
+				StopProfileSender();
+				PatchInventoryChanged.Reset();
+				Utils.Log("The server confirmed that the final character profile was saved. Waiting for Valheim's native server-shutdown disconnect.");
+				if (peerRpc.GetSocket()?.IsConnected() == true)
+					peerRpc.Invoke("ServerCharacters ShutdownReady", request);
+			}
+			catch (Exception e)
+			{
+				serverShutdownConfirmed = false;
+				ServerCharacters.logger.LogError($"Could not acknowledge the confirmed server shutdown: {e}");
 			}
 		}
 
@@ -979,6 +945,11 @@ public static class ClientSide
 			{
 				return;
 			}
+			if (serverShutdownConfirmed)
+			{
+				Utils.Log("Received Valheim's native disconnect after the final shutdown profile was confirmed; skipping the redundant character save.");
+				return;
+			}
 
 			if (serverCharacter)
 			{
@@ -997,6 +968,14 @@ public static class ClientSide
 					forceSynchronousSaving = false;
 				}
 			}
+		}
+
+		[UsedImplicitly]
+		private static void Postfix()
+		{
+			if (!serverShutdownConfirmed) return;
+			ZNet.m_connectionStatus = ZNet.ConnectionStatus.None;
+			Utils.Log("Valheim's native disconnect completed for the confirmed server shutdown without reporting a connection error.");
 		}
 	}
 
@@ -1111,7 +1090,7 @@ public static class ClientSide
 		private static void Prefix()
 		{
 			if (finalProfileEvent.Length == 0) finalProfileEvent = "ServerCharacters PlayerProfileLogout";
-			doEmergencyBackup = ZNet.GetConnectionStatus() != ZNet.ConnectionStatus.Connecting && ZNet.GetConnectionStatus() != ZNet.ConnectionStatus.Connected && !Game.instance.IsShuttingDown();
+			doEmergencyBackup = !serverShutdownConfirmed && ZNet.GetConnectionStatus() != ZNet.ConnectionStatus.Connecting && ZNet.GetConnectionStatus() != ZNet.ConnectionStatus.Connected && !Game.instance.IsShuttingDown();
 			if (doEmergencyBackup)
 			{
 				Utils.Log("Lost connection to the server. Preparing for emergency backup of profile data.");
@@ -1155,7 +1134,7 @@ public static class ClientSide
 	{
 		try
 		{
-			if (!serverCharacter || currentlySaving || doEmergencyBackup || Game.instance?.m_playerProfile == null ||
+			if (!serverCharacter || serverShutdownConfirmed || currentlySaving || doEmergencyBackup || Game.instance?.m_playerProfile == null ||
 				Player.m_localPlayer == null || ZNet.instance?.GetServerPeer()?.IsReady() != true) return;
 
 			float now = Time.realtimeSinceStartup;

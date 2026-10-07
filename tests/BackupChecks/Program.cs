@@ -54,6 +54,12 @@ var originalBuffs = new List<BuffState.Entry>
     new() { Hash = 789, Remaining = 9f, StateKind = BuffState.Kind.Stats, State = new[] { 1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f } },
 };
 BuffState.Store(buffData, originalBuffs, false);
+string v2Encoded = buffData[BuffState.Key];
+Check(Convert.FromBase64String(v2Encoded)[0] == BuffState.CurrentVersion, "new buff saves use the current format");
+byte[] v1Bytes = Convert.FromBase64String(v2Encoded);
+v1Bytes[0] = 1;
+var v1Data = new Dictionary<string, string> { [BuffState.Key] = Convert.ToBase64String(v1Bytes) };
+Check(BuffState.Take(v1Data, false, out var v1Buffs) && v1Buffs.Count == 3, "1.4.56 buff format remains readable");
 Check(BuffState.Take(buffData, false, out var restoredBuffs) && restoredBuffs.Count == 3, "player buffs round-trip");
 Check(restoredBuffs[0].Hash == 123 && restoredBuffs[0].Remaining == 42.5f && restoredBuffs[0].Variant == 3, "generic buff state preserved");
 Check(restoredBuffs[1].StateKind == BuffState.Kind.Shield && restoredBuffs[1].State.SequenceEqual(new[] { 200f, 75f }), "shield absorption preserved");
@@ -63,6 +69,36 @@ BuffState.Store(buffData, originalBuffs, true);
 Check(!buffData.ContainsKey(BuffState.Key), "dead player cannot save buffs");
 buffData[BuffState.Key] = "malformed";
 Check(!BuffState.Take(buffData, false, out _) && !buffData.ContainsKey(BuffState.Key), "malformed buff snapshot ignored and consumed");
+var legacyBuffData = new Dictionary<string, string>
+{
+    [RestedState.Key] = "123.5",
+    [BuffState.LegacyPoisonDamageKey] = "18.25",
+    [BuffState.LegacyPoisonDamageHitKey] = "2.5",
+    [BuffState.LegacyPoisonTtlKey] = "14",
+};
+BuffState.LegacyEffects legacyBuffs = BuffState.TakeLegacy(legacyBuffData, false);
+Check(legacyBuffs.HasRested && legacyBuffs.RestedRemaining == 123.5f, "legacy Rested state decoded");
+Check(legacyBuffs.HasPoison && legacyBuffs.PoisonDamageLeft == 18.25f && legacyBuffs.PoisonDamagePerHit == 2.5f && legacyBuffs.PoisonRemaining == 14f, "legacy Poison state decoded");
+Check(legacyBuffData.Count == 0, "legacy buff keys consumed during migration");
+var migratedBuffs = new List<BuffState.Entry>();
+BuffState.MergeLegacy(migratedBuffs, legacyBuffs, 1001, 1002, true);
+Check(migratedBuffs.Count == 2 && migratedBuffs.Any(effect => effect.StateKind == BuffState.Kind.Rested) && migratedBuffs.Any(effect => effect.StateKind == BuffState.Kind.Poison), "legacy effects migrate into the unified snapshot");
+var preferredBuffs = new List<BuffState.Entry> { new() { Hash = 1001, Remaining = 7, StateKind = BuffState.Kind.Rested } };
+BuffState.MergeLegacy(preferredBuffs, legacyBuffs, 1001, 1002, true);
+Check(preferredBuffs.Count == 2 && preferredBuffs.Single(effect => effect.Hash == 1001).Remaining == 7, "unified effects take precedence over legacy duplicates");
+var fallbackData = new Dictionary<string, string> { [BuffState.Key] = "malformed", [RestedState.Key] = "55" };
+Check(!BuffState.Take(fallbackData, false, out var fallbackBuffs), "malformed unified snapshot rejected before fallback");
+BuffState.MergeLegacy(fallbackBuffs, BuffState.TakeLegacy(fallbackData, false), 1001, 1002, true);
+Check(fallbackBuffs.Count == 1 && fallbackBuffs[0].Remaining == 55, "legacy state recovers a malformed unified snapshot");
+var cleanedLegacyData = new Dictionary<string, string>
+{
+    [RestedState.Key] = "10",
+    [BuffState.LegacyPoisonDamageKey] = "1",
+    [BuffState.LegacyPoisonDamageHitKey] = "1",
+    [BuffState.LegacyPoisonTtlKey] = "1",
+};
+BuffState.Store(cleanedLegacyData, migratedBuffs, false);
+Check(cleanedLegacyData.Count == 1 && cleanedLegacyData.ContainsKey(BuffState.Key), "new saves write only the unified buff format");
 new Random(1234).NextBytes(data);
 using (var left = new ShortReads(data, 113))
 using (var right = new ShortReads(data, 701))

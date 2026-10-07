@@ -18,7 +18,7 @@ internal static class RestedState
 	internal static bool Take(Dictionary<string, string> data, bool dead, out float remaining)
 	{
 		remaining = 0;
-		if (!data.TryGetValue(Key, out string value)) return false;
+		if (!data.TryGetValue(Key, out string? value)) return false;
 		data.Remove(Key); // Consume once; never reuse a stale duration after death or expiry.
 		return !dead && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out remaining) && Valid(remaining);
 	}

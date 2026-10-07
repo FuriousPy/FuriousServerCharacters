@@ -22,13 +22,17 @@ public static class ServerSide
 	private static readonly Dictionary<ZNetPeer, Utils.ProfileName> peerProfileNameMap = new();
 	private static readonly Dictionary<string, float> saveErrorNotifications = new();
 	private static readonly HashSet<long> shutdownSavePending = new();
+	private static readonly HashSet<long> shutdownDisconnectPending = new();
+	private static readonly HashSet<long> shutdownDisconnectAcknowledged = new();
 	private const float SaveErrorNotificationCooldown = 60f;
 	private const float SaveErrorNotificationRetention = 600f;
 	private const float SaveErrorNotificationCleanupInterval = 300f;
 	private const float ShutdownSaveTimeout = 10f;
+	private const float ShutdownDisconnectTimeout = 2f;
 	private static bool shutdownSaveInProgress;
 	private static bool shutdownApproved;
 	private static string shutdownRequest = "";
+	private static DateTime lastShutdownProgressNotice = DateTime.MinValue;
 	private static float nextSaveErrorNotificationCleanup;
 
 	public static bool OnApplicationWantsToQuit()
@@ -45,11 +49,19 @@ public static class ServerSide
 				bool connected = ZNet.instance.GetPeers().Any(peer => peer?.m_rpc != null && peer.m_uid != 0 && peer.m_socket?.IsConnected() == true);
 				if (!connected && pendingDisconnectSaves.Count == 0)
 				{
+					ServerCharacters.logger.LogWarning("Server shutdown request received. No connected character profiles need saving; continuing with the Valheim shutdown.");
 					shutdownApproved = true;
 					return true;
 				}
+				lastShutdownProgressNotice = DateTime.UtcNow;
+				ServerCharacters.logger.LogWarning("Server shutdown request received. Furious Server Characters is saving connected character profiles before Valheim exits. Please wait and do not press Ctrl+C again.");
 				shutdownSaveInProgress = true;
 				ServerCharacters.selfReference.StartCoroutine(SaveConnectedPlayersBeforeShutdown());
+			}
+			else if ((DateTime.UtcNow - lastShutdownProgressNotice).TotalSeconds >= 0.5)
+			{
+				lastShutdownProgressNotice = DateTime.UtcNow;
+				ServerCharacters.logger.LogWarning($"Server shutdown is already in progress. Waiting for {shutdownSavePending.Count} final character save(s); please do not press Ctrl+C again.");
 			}
 			return false;
 		}
@@ -67,6 +79,20 @@ public static class ServerSide
 	{
 		[UsedImplicitly]
 		private static bool Prefix() => OnApplicationWantsToQuit();
+	}
+
+	[HarmonyPatch(typeof(Game), nameof(Game.OnApplicationQuit))]
+	private static class PatchGameOnApplicationQuitBeforeShutdownSave
+	{
+		[UsedImplicitly]
+		[HarmonyPriority(Priority.First)]
+		private static bool Prefix()
+		{
+			// Unity can enter Game.OnApplicationQuit even when wantsToQuit postpones the exit.
+			// Do not let the first pass tear down builders and networking; Application.Quit
+			// is requested again after the final character profiles have been persisted.
+			return ZNet.instance?.IsServer() != true || shutdownApproved;
+		}
 	}
 
 	private static IEnumerator SaveConnectedPlayersBeforeShutdown()
@@ -124,6 +150,55 @@ public static class ServerSide
 				{
 					Utils.Log("Final character saves were confirmed for all connected players.");
 				}
+
+				shutdownDisconnectPending.Clear();
+				shutdownDisconnectAcknowledged.Clear();
+				foreach (ZNetPeer peer in peers)
+				{
+					if (shutdownSavePending.Contains(peer.m_uid) || peer.m_rpc == null || peer.m_socket?.IsConnected() != true) continue;
+					try
+					{
+						shutdownDisconnectPending.Add(peer.m_uid);
+						peer.m_rpc.Invoke("ServerCharacters ShutdownConfirmed", shutdownRequest);
+						Utils.Log($"Notified {peer.m_playerName} ({peer.m_uid}) that the final profile was saved and the server is shutting down.");
+					}
+					catch (Exception e)
+					{
+						shutdownDisconnectPending.Remove(peer.m_uid);
+						ServerCharacters.logger.LogWarning($"Could not send the confirmed-shutdown notice to peer {peer.m_uid}: {e}");
+					}
+				}
+
+				var disconnectWait = System.Diagnostics.Stopwatch.StartNew();
+				while (shutdownDisconnectPending.Count > 0 && disconnectWait.Elapsed.TotalSeconds < ShutdownDisconnectTimeout)
+				{
+					yield return null;
+				}
+				if (shutdownDisconnectPending.Count > 0)
+					ServerCharacters.logger.LogWarning($"Continuing shutdown without a client-ready response from peer UID(s): {string.Join(", ", shutdownDisconnectPending)}");
+
+				List<ZNetPeer> nativeDisconnectPeers = peers
+					.Where(peer => shutdownDisconnectAcknowledged.Contains(peer.m_uid) && peer.m_rpc != null && peer.m_socket?.IsConnected() == true)
+					.ToList();
+				foreach (ZNetPeer peer in nativeDisconnectPeers)
+				{
+					try
+					{
+						peer.m_rpc.Invoke("Disconnect");
+						Utils.Log($"Sent Valheim's native disconnect to {peer.m_playerName} ({peer.m_uid}) while the server connection is still active.");
+					}
+					catch (Exception e)
+					{
+						ServerCharacters.logger.LogWarning($"Could not send Valheim's native disconnect early to peer {peer.m_uid}: {e}");
+					}
+				}
+
+				var nativeDisconnectWait = System.Diagnostics.Stopwatch.StartNew();
+				while (nativeDisconnectPeers.Any(peer => peer.m_socket?.IsConnected() == true) &&
+				       nativeDisconnectWait.Elapsed.TotalSeconds < ShutdownDisconnectTimeout)
+				{
+					yield return null;
+				}
 			}
 		}
 		finally
@@ -139,10 +214,31 @@ public static class ServerSide
 			finally
 			{
 				shutdownSavePending.Clear();
+				shutdownDisconnectPending.Clear();
+				shutdownDisconnectAcknowledged.Clear();
+				ServerCharacters.logger.LogWarning("Furious Server Characters finished shutdown preparation. Continuing with the Valheim shutdown now.");
 				shutdownApproved = true;
 				shutdownSaveInProgress = false;
 				Application.Quit();
 			}
+		}
+	}
+
+	private static void MarkShutdownClientReady(ZRpc peerRpc, string request)
+	{
+		if (!shutdownSaveInProgress || request != shutdownRequest) return;
+		try
+		{
+			ZNetPeer? peer = ZNet.instance?.GetPeer(peerRpc);
+			if (peer != null && shutdownDisconnectPending.Remove(peer.m_uid))
+			{
+				shutdownDisconnectAcknowledged.Add(peer.m_uid);
+				Utils.Log($"Client {peer.m_playerName} ({peer.m_uid}) acknowledged the server shutdown and is waiting for Valheim's native disconnect.");
+			}
+		}
+		catch (Exception e)
+		{
+			ServerCharacters.logger.LogWarning($"Could not process a client shutdown acknowledgement: {e}");
 		}
 	}
 
@@ -336,6 +432,7 @@ public static class ServerSide
 				peer.m_rpc.Register("ServerCharacters PlayerInventory", ReceiveUpdate((rpc, data, revision, request) => onReceivedInventory(rpc, data, revision), compressed: false));
 				peer.m_rpc.Register("ServerCharacters PlayerSnapshot", ReceiveUpdate((rpc, data, revision, request) => onReceivedSnapshot(rpc, data, revision)));
 				peer.m_rpc.Register("ServerCharacters PlayerDied", ReceiveUpdate(onPlayerDied));
+				peer.m_rpc.Register<string>("ServerCharacters ShutdownReady", MarkShutdownClientReady);
 				long time = DateTime.Now.Ticks;
 				byte[] key = deriveKey(time);
 
