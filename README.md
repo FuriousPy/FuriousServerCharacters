@@ -2,7 +2,7 @@
 
 A BepInEx plugin for Valheim that keeps player characters on the server, so character progress does not depend on a client's local character file. This project is based on [Smoothbrain's ServerCharacters project](https://github.com/blaxxun-boop/ServerCharacters).
 
-Current version: **1.4.57**
+Current version: **1.4.58**
 
 ## What it does
 
@@ -114,7 +114,9 @@ Valheim's native character profile retains its own character data, including ski
 
 Legacy Rested and Poison fields and the `1.4.56` buff snapshot format are migrated automatically when a character loads. New saves write only the unified, versioned buff snapshot.
 
-Effects recalculated from the world, equipped items, weather, shelter, encumbrance, or death state are not restored.
+The post-death no-skill-drain protection (`SoftDeath`) uses Valheim's saved time since death. Its icon and remaining duration are synchronized after reconnecting and during play, without restarting the protection timer. The icon is removed when the protection expires or the player is dead.
+
+Effects recalculated from the world, equipped items, weather, shelter, encumbrance, or death state are not restored from the buff snapshot.
 
 ## Server files
 

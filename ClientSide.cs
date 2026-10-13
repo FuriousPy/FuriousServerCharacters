@@ -287,6 +287,32 @@ public static class ClientSide
 	}.Select(name => name.GetStableHashCode()));
 	private static readonly int RestedHash = "Rested".GetStableHashCode();
 	private static readonly int PoisonHash = "Poison".GetStableHashCode();
+	private static readonly int SoftDeathHash = "SoftDeath".GetStableHashCode();
+
+	// Player.Save/Load already persist m_timeSinceDeath in the native player data.
+	// Keep the recreated icon on that same clock, including after reconnecting.
+	private static void SynchronizeDeathProtection(Player player)
+	{
+		if (!serverCharacter || player.m_nview?.m_zdo == null || !player.m_nview.IsOwner()) return;
+		float elapsed = player.m_timeSinceDeath;
+		float duration = player.m_hardDeathCooldown;
+		if (!BuffState.Valid(elapsed) || !BuffState.Valid(duration)) return;
+		if (player.IsDead() || elapsed >= duration)
+		{
+			player.m_seman.RemoveStatusEffect(SoftDeathHash);
+			return;
+		}
+		StatusEffect? effect = player.m_seman.GetStatusEffect(SoftDeathHash) ?? player.m_seman.AddStatusEffect(SoftDeathHash);
+		if (effect == null) return;
+		effect.m_ttl = duration;
+		effect.m_time = Math.Max(0, elapsed);
+	}
+
+	[HarmonyPatch(typeof(Player), nameof(Player.UpdateStats), new[] { typeof(float) })]
+	private static class UpdateDeathProtection
+	{
+		private static void Postfix(Player __instance) => SynchronizeDeathProtection(__instance);
+	}
 
 	private static float FiniteOrZero(float value) => BuffState.Valid(value) ? value : 0;
 
@@ -431,6 +457,7 @@ public static class ClientSide
 			try
 			{
 				if (__instance.m_nview?.m_zdo == null || !__instance.m_nview.IsOwner()) return;
+				SynchronizeDeathProtection(__instance);
 				BuffState.Take(__instance.m_customData, __instance.IsDead(), out List<BuffState.Entry> saved);
 				BuffState.MergeLegacy(saved, BuffState.TakeLegacy(__instance.m_customData, __instance.IsDead()),
 					RestedHash, PoisonHash, ServerCharacters.storePoison.GetToggle());
