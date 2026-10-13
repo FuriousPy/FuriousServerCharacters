@@ -147,9 +147,8 @@ As with any persistence plugin, the dedicated server should always run under the
 
 ## Requirements
 
-- A Valheim version compatible with the compiled plugin.
-- BepInEx for Valheim.
-- ServerSync and HarmonyX, provided through the BepInEx mod environment.
+- A Valheim min ver 1.0.17.
+- BepInEx min ver 5.4.2350 for Valheim.
 - The same mod version installed on both the server and every client.
 
 ## Building
