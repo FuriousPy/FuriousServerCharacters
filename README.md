@@ -165,6 +165,10 @@ As with any persistence plugin, the dedicated server should always run under the
 - BepInEx min ver 5.4.2350 for Valheim.
 - The same mod version installed on both the server and every client.
 
+## Tested on
+- A Valheim ver 1.0.20.
+- BepInEx ver 5.4.2351 for Valheim.
+- 
 ## Building
 
 The project targets .NET Framework 4.8 and uses the locally installed Valheim assemblies. Build through Visual Studio or MSBuild:
