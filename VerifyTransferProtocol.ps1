@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$taskBin = Join-Path (Split-Path $PSScriptRoot -Parent) 'bin\Release'
+$taskBin = Join-Path $PSScriptRoot 'bin\Release'
 $resolver = [System.ResolveEventHandler] {
     param($sender, $args)
     $candidate = Join-Path $taskBin ((New-Object System.Reflection.AssemblyName($args.Name)).Name + '.dll')
@@ -8,10 +8,10 @@ $resolver = [System.ResolveEventHandler] {
 }
 [AppDomain]::CurrentDomain.add_AssemblyResolve($resolver)
 try {
-    foreach ($dependency in @('netstandard.dll', 'UnityEngine.CoreModule.dll', 'assembly_utils.dll', 'assembly_valheim.dll', 'ServerCharacters.dll')) {
+    foreach ($dependency in @('netstandard.dll', 'UnityEngine.CoreModule.dll', 'assembly_utils.dll', 'assembly_valheim.dll', 'FuriousServerCharacters.dll')) {
         [System.Reflection.Assembly]::LoadFrom((Join-Path $taskBin $dependency)) | Out-Null
     }
-    Add-Type -ReferencedAssemblies @((Join-Path $taskBin 'assembly_valheim.dll'), (Join-Path $taskBin 'assembly_utils.dll'), (Join-Path $taskBin 'ServerCharacters.dll'), (Join-Path $taskBin 'UnityEngine.CoreModule.dll'), (Join-Path $taskBin 'netstandard.dll'), 'System.Core.dll', 'System.IO.Compression.dll') -TypeDefinition @'
+    Add-Type -ReferencedAssemblies @((Join-Path $taskBin 'assembly_valheim.dll'), (Join-Path $taskBin 'assembly_utils.dll'), (Join-Path $taskBin 'FuriousServerCharacters.dll'), (Join-Path $taskBin 'UnityEngine.CoreModule.dll'), (Join-Path $taskBin 'netstandard.dll'), 'System.Core.dll', 'System.IO.Compression.dll') -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,7 +29,7 @@ public static class TransferProtocolChecks {
     }
     static byte[] Compress(byte[] data) {
         using (var output = new MemoryStream()) {
-            using (var zip = new DeflateStream(output, CompressionMode.Compress, true)) zip.Write(data, 0, data.Length);
+            using (var zip = new DeflateStream(output, CompressionLevel.Fastest, true)) zip.Write(data, 0, data.Length);
             return output.ToArray();
         }
     }
@@ -66,6 +66,17 @@ public static class TransferProtocolChecks {
         Check(rawInventory.SequenceEqual(first), "uncompressed inventory fragments round trip without inflation");
         rawReceiver(a, Part(second, 1, 47)); rawReceiver(a, Part(second, 0, 47));
         Check(rawInventory.SequenceEqual(second), "uncompressed inventory supports out-of-order fragments");
+        foreach (bool compressed in new[] { false, true }) {
+            foreach (byte[] payload in new[] { first, new byte[0] }) {
+                byte[] wire = compressed ? Compress(payload) : payload;
+                byte[] result = null;
+                var singleReceiver = Shared.receiveCompressedFromPeer((rpc, data) => result = data, compressed);
+                var single = new ZPackage();
+                single.Write(100L); single.Write(0); single.Write(1); single.Write(wire); single.SetPos(0);
+                singleReceiver(a, single);
+                Check(result != null && result.SequenceEqual(payload), "single fragment round trip compressed=" + compressed + " bytes=" + payload.Length);
+            }
+        }
         var flags = BindingFlags.NonPublic | BindingFlags.Static;
 		var shutdownRoutine = (System.Collections.IEnumerator)typeof(ServerSide).GetMethod("SaveConnectedPlayersBeforeShutdown", flags).Invoke(null, null);
 		Check(shutdownRoutine.MoveNext() && shutdownRoutine.Current == null, "shutdown coordination yields before any nested quit request");

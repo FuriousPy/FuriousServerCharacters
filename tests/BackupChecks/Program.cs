@@ -113,61 +113,86 @@ using (var right = new ShortReads(changed, 701))
     Check(!ProfileBackupStore.StreamsHaveEqualContent(left, right), "last-byte difference detected");
 
 DateTimeOffset start = new(2026, 9, 17, 12, 0, 0, TimeSpan.Zero);
+DateTime Source(int minutes) => start.AddMinutes(minutes).UtcDateTime;
 string zip = Path.Combine(root, "player.zip");
-Check(ProfileBackupStore.Update(zip, "player", () => data, start), "first backup");
-byte[] originalZip = File.ReadAllBytes(zip);
-Check(!ProfileBackupStore.Update(zip, "player", () => throw new Exception("source should not be read"), start.AddMinutes(10)), "cooldown avoids source reads");
-Check(originalZip.SequenceEqual(File.ReadAllBytes(zip)), "cooldown leaves ZIP bytes unchanged");
-Check(!ProfileBackupStore.Update(zip, "player", () => data, start.AddMinutes(31)), "identical backup omitted");
-Check(originalZip.SequenceEqual(File.ReadAllBytes(zip)), "identical backup leaves ZIP bytes unchanged");
-Check(ProfileBackupStore.Update(zip, "player", () => changed, start.AddMinutes(31)), "changed backup accepted");
-byte[] third = data.Concat(new byte[] { 1, 2, 3 }).ToArray();
-Check(ProfileBackupStore.Update(zip, "player", () => third, start.AddMinutes(62)), "third generation accepted");
-using (var archive = ZipFile.OpenRead(zip))
+string[] Backups(string directory, string name = "player") => Directory.GetFiles(directory, name + "_old-*.zip").OrderBy(p => p, StringComparer.Ordinal).ToArray();
+bool Save(int minutes, int sourceMinutes, Func<byte[]> read) =>
+    ProfileBackupStore.Update(zip, "player", Source(sourceMinutes), read, start.AddMinutes(minutes));
+byte[] MustNotRead() => throw new Exception("source should not be read");
+Check(Save(0, -1, () => data), "first backup");
+string firstZip = Backups(root).Single();
+byte[] originalZip = File.ReadAllBytes(firstZip);
+Check(firstZip.EndsWith("player_old-20260917T1159000000000Z_backup-20260917T1200000000000Z.zip"), "both UTC timestamps persisted in filename");
+Check(!Save(29, 20, MustNotRead), "cooldown avoids reading source");
+Check(!Save(30, -1, MustNotRead), "same source timestamp skipped at cooldown boundary");
+Check(!Save(31, -2, MustNotRead), "older source timestamp skipped");
+Check(Save(30, 20, () => data), "new timestamp accepted at exactly 30 minutes even with identical content");
+Check(originalZip.SequenceEqual(File.ReadAllBytes(firstZip)), "old backup remains byte-for-byte unchanged");
+string secondZip = Backups(root).Last();
+byte[] secondBytes = File.ReadAllBytes(secondZip);
+if (OperatingSystem.IsWindows())
 {
-    Check(archive.Entries.Count == 2, "only two backups retained");
-    using var stream = archive.Entries.Last().Open();
-    using var expected = new MemoryStream(third);
-    Check(ProfileBackupStore.StreamsHaveEqualContent(stream, expected), "newest archive data verified");
+    using var locked = new FileStream(secondZip, FileMode.Open, FileAccess.Read, FileShare.None);
+    Check(Save(60, 50, () => changed), "rotation does not open previous backup even when exclusively locked");
 }
-string restarted = Path.Combine(root, "restarted.zip");
-File.Copy(zip, restarted);
-Check(!ProfileBackupStore.Update(restarted, "player", () => throw new Exception("source should not be read"), start.AddMinutes(65)), "persisted ZIP timestamp enforces cooldown without cache");
-byte[] beforeFailure = File.ReadAllBytes(zip);
+else Check(Save(60, 50, () => changed), "third generation accepted");
+Check(Backups(root).Length == 2 && !File.Exists(firstZip), "only newest two independent ZIPs retained");
+Check(secondBytes.SequenceEqual(File.ReadAllBytes(secondZip)), "retained backup never rewritten");
+using (var archive = ZipFile.OpenRead(Backups(root).Last()))
+{
+    Check(archive.Entries.Count == 1, "one profile per ZIP");
+    using var stream = archive.Entries[0].Open();
+    using var expected = new MemoryStream(changed);
+    Check(ProfileBackupStore.StreamsHaveEqualContent(stream, expected), "new backup content verified");
+}
+string restartDir = Path.Combine(root, "restart");
+Directory.CreateDirectory(restartDir);
+foreach (string file in Backups(root))
+{
+    string copy = Path.Combine(restartDir, Path.GetFileName(file));
+    File.Copy(file, copy);
+    File.SetLastWriteTimeUtc(copy, Source(-10000));
+}
+string restarted = Path.Combine(restartDir, "player.zip");
+Check(!ProfileBackupStore.Update(restarted, "player", Source(80), MustNotRead, start.AddMinutes(65)), "filename cooldown survives restart and filesystem timestamp changes");
+Check(!ProfileBackupStore.Update(restarted, "player", Source(50), MustNotRead, start.AddMinutes(95)), "source timestamp survives restart without in-memory cache");
+string[] beforeFailure = Backups(root);
 try
 {
-    ProfileBackupStore.Update(zip, "player", () => throw new IOException("simulated source failure"), start.AddMinutes(95));
+    Save(95, 90, () => throw new IOException("simulated source failure"));
     throw new Exception("Expected simulated failure");
 }
 catch (IOException) { }
-Check(beforeFailure.SequenceEqual(File.ReadAllBytes(zip)), "source failure preserves previous ZIP");
-// Force atomic publication to fail on Windows by holding a handle without delete sharing.
-if (OperatingSystem.IsWindows())
+Check(beforeFailure.SequenceEqual(Backups(root)), "source failure preserves existing backups");
+string blockedDestination = Path.Combine(root, "player_old-20260917T1330000000000Z_backup-20260917T1335000000000Z.zip");
+Directory.CreateDirectory(blockedDestination);
+try
 {
-    using (var locked = new FileStream(zip, FileMode.Open, FileAccess.Read, FileShare.Read))
-    {
-        try
-        {
-            ProfileBackupStore.Update(zip, "player", () => data, start.AddMinutes(95));
-            throw new Exception("Expected locked publication failure");
-        }
-        catch (IOException) { }
-    }
-    Check(beforeFailure.SequenceEqual(File.ReadAllBytes(zip)), "failed atomic replacement preserves both previous backups");
-    Check(Directory.GetFiles(root, "*.tmp").Length == 0, "failed replacement removes temporary output");
+    Save(95, 90, () => data);
+    throw new Exception("Expected publication failure");
 }
+catch (IOException) { }
+Check(beforeFailure.SequenceEqual(Backups(root)), "failed publication preserves both backups");
+Check(Directory.GetFiles(root, "*.tmp").Length == 0, "failed publication removes temporary file");
+Directory.Delete(blockedDestination);
+string unrelated = Path.Combine(root, "player_old-invalid_backup-invalid.zip");
+File.WriteAllText(unrelated, "not a managed backup");
+Check(Save(95, 90, () => data), "successful publication after failure");
+Check(File.Exists(unrelated), "unrecognized names are not deleted");
 string legacy = Path.Combine(root, "legacy.zip");
 using (var archive = ZipFile.Open(legacy, ZipArchiveMode.Create))
-    for (int i = 0; i < 5; i++)
-    {
-        var entry = archive.CreateEntry("old-" + i + ".fch");
-        entry.LastWriteTime = start.AddMinutes(i).ToLocalTime();
-        using var stream = entry.Open();
-        stream.Write(data);
-    }
-Check(!ProfileBackupStore.Update(legacy, "player", () => throw new Exception("source should not be read"), start.AddMinutes(5)), "legacy archive trimmed without new backup");
-using (var archive = ZipFile.OpenRead(legacy))
-    Check(archive.Entries.Count == 2 && archive.Entries.Any(e => e.Name == "old-4.fch"), "legacy retains newest two");
+{
+    var entry = archive.CreateEntry("older.fch");
+    using var stream = entry.Open();
+    stream.Write(data);
+}
+File.SetLastWriteTimeUtc(legacy, Source(0));
+byte[] legacyBytes = File.ReadAllBytes(legacy);
+Check(!ProfileBackupStore.Update(legacy, "legacy", Source(10), MustNotRead, start.AddMinutes(10)), "legacy cooldown uses filesystem metadata only");
+Check(ProfileBackupStore.Update(legacy, "legacy", Source(20), () => data, start.AddMinutes(30)), "first new-format backup beside legacy ZIP");
+Check(File.Exists(legacy) && legacyBytes.SequenceEqual(File.ReadAllBytes(legacy)), "legacy retained intact until two new backups exist");
+Check(ProfileBackupStore.Update(legacy, "legacy", Source(50), () => changed, start.AddMinutes(60)), "second new-format backup created");
+Check(!File.Exists(legacy) && Backups(root, "legacy").Length == 2, "legacy retired only after two verified backups");
 Console.WriteLine($"{passed} checks passed. Test artifacts: {root}");
 
 sealed class ShortReads(byte[] data, int chunk) : Stream

@@ -74,7 +74,7 @@ public static class Shared
 		if (compressed)
 		{
 			using MemoryStream output = new();
-			using (DeflateStream deflateStream = new(output, CompressionLevel.Optimal, true))
+			using (DeflateStream deflateStream = new(output, CompressionLevel.Fastest, true))
 				deflateStream.Write(packageArray, 0, packageArray.Length);
 			data = output.ToArray();
 		}
@@ -203,12 +203,21 @@ public static class Shared
 			profileCacheCounts.Remove(cacheKey);
 			cacheExpirations.RemoveAll(entry => entry.Value.Equals(cacheKey));
 
-			byte[] compressedData = new byte[checked((int)compressedSize)];
-			int compressedOffset = 0;
-			foreach (byte[] dataFragment in dataFragments.Values)
+			// ReadByteArray gives this transfer its own buffer; a single fragment needs no copy.
+			byte[] compressedData;
+			if (fragments == 1)
 			{
-				Buffer.BlockCopy(dataFragment, 0, compressedData, compressedOffset, dataFragment.Length);
-				compressedOffset += dataFragment.Length;
+				compressedData = receivedFragment;
+			}
+			else
+			{
+				compressedData = new byte[checked((int)compressedSize)];
+				int compressedOffset = 0;
+				foreach (byte[] dataFragment in dataFragments.Values)
+				{
+					Buffer.BlockCopy(dataFragment, 0, compressedData, compressedOffset, dataFragment.Length);
+					compressedOffset += dataFragment.Length;
+				}
 			}
 
 			if (!compressed)

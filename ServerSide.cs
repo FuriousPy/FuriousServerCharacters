@@ -496,7 +496,7 @@ public static class ServerSide
 				ZNetPeer? failedPeer = ZNet.instance?.GetPeer(peerRpc);
 				if (failedPeer != null && revision > state.Snapshot)
 				{
-					DisconnectProtectionSnapshots[Utils.ProfileName.fromPeer(failedPeer)] = profileData.ToArray();
+					DisconnectProtectionSnapshots[Utils.ProfileName.fromPeer(failedPeer)] = profileData;
 					state.Snapshot = revision;
 					if (state.CoversInventory(revision)) Inventories.Remove(Utils.ProfileName.fromPeer(failedPeer));
 				}
@@ -562,7 +562,7 @@ public static class ServerSide
 					return;
 				}
 
-				DisconnectProtectionSnapshots[Utils.ProfileName.fromPeer(peer)] = profileData.ToArray();
+				DisconnectProtectionSnapshots[Utils.ProfileName.fromPeer(peer)] = profileData;
 				state.Snapshot = revision;
 				ServerCharacters.LogDiagnostic($"Character transfer receive event=PlayerSnapshot peer={peer.m_uid} revision={revision} bytes={profileData.Length}");
 				if (state.CoversInventory(revision)) Inventories.Remove(Utils.ProfileName.fromPeer(peer));
@@ -1032,12 +1032,11 @@ public static class ServerSide
 
 	private static void backupProfile(PlayerProfile profile)
 	{
-		string[] parts = profile.m_filename.Split('_');
-		Utils.Cache.profiles[new Utils.ProfileName { id = parts.Length > 1 ? $"{parts[0]}_{parts[1]}" : parts[0], name = profile.GetName().ToLower() }] = profile;
-		string saveFile = SaveSystem.GetCharacterFolderPath(profile.m_fileSource) + profile.m_filename + ".fch.old";
+		string saveFile = Path.Combine(SaveSystem.GetCharacterFolderPath(profile.m_fileSource), profile.m_filename + ".fch.old");
 		if (!FileHelpers.Exists(saveFile, profile.m_fileSource)) return;
 		string zipPath = Path.Combine(Utils.CharacterSavePath, "backups", profile.m_filename + ".zip");
-		bool created = ProfileBackupStore.Update(zipPath, profile.m_filename, () =>
+		DateTime sourceModifiedUtc = File.GetLastWriteTimeUtc(saveFile);
+		bool created = ProfileBackupStore.Update(zipPath, profile.m_filename, sourceModifiedUtc, () =>
 		{
 			FileReader reader = new(saveFile, profile.m_fileSource);
 			try
@@ -1046,11 +1045,12 @@ public static class ServerSide
 				if (source.CanSeek) source.Position = 0;
 				using MemoryStream data = new();
 				source.CopyTo(data);
+				if (File.GetLastWriteTimeUtc(saveFile) != sourceModifiedUtc) throw new IOException("Backup source changed while being read.");
 				return data.ToArray();
 			}
 			finally { reader.Dispose(); }
 		});
-		if (created) Utils.Log($"Created a character backup in '{zipPath}' (maximum two copies, minimum interval 30 minutes).");
+		if (created) Utils.Log($"Created a character backup for '{profile.m_filename}' in '{Path.GetDirectoryName(zipPath)}' (maximum two ZIPs, minimum interval 30 minutes).");
 	}
 
 	public static void generateServerKey()

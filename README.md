@@ -2,7 +2,7 @@
 
 A BepInEx plugin for Valheim that keeps player characters on the server, so character progress does not depend on a client's local character file. This project is based on [Smoothbrain's ServerCharacters project](https://github.com/blaxxun-boop/ServerCharacters).
 
-Current version: **1.4.58**
+Current version: **1.4.59**
 
 ## What it does
 
@@ -69,9 +69,23 @@ Activity is recorded when the player moves in the world, moves the mouse, or use
 | `Unexpected disconnect protection interval` | `60` | seconds | Interval between full character snapshots kept in server memory. |
 | Inventory update interval | `2` | seconds | Internal maximum interval between inventory sends after the initial immediate update. |
 | Character backups retained | `2` | files | Maximum backup files kept per character. |
-| Minimum backup interval | `30` | minutes | Prevents frequent or identical backup files. |
+| Minimum backup interval | `30` | minutes | Minimum time between backups; a newer source modification timestamp is also required. |
 | `AFK Kick Timer` | `0` | minutes | Disabled by default; `0` disables AFK kicking. |
 | `Diagnostic Logging` | `Off` | toggle | Optional `Message`-level transfer diagnostics; payload contents are never logged. |
+
+### Character backup rotation
+
+After a successful character save, the server backs up the previous version in .fch.old if at least 30 minutes have passed since the last backup and its last-modification timestamp is newer than the source timestamp already backed up. No content comparison or hashing is performed: identical contents with a newer timestamp may produce another backup, while contents changed without a newer timestamp do not.
+
+Each character retains two independent ZIPs under characters_local/backups. Filenames record both timestamps in UTC, with seven fractional-second digits:
+
+    Steam_123_Character_old-20261016T1830451234567Z_backup-20261016T1900000000000Z.zip
+
+The old- timestamp identifies the source file's last-modification time; backup- identifies when the backup was created and controls the cooldown across restarts. Do not rename these files: unrecognized filenames are excluded from automatic rotation.
+
+Only the new profile is compressed (Fastest). The temporary ZIP is flushed and its content verified before publication; only then are older files removed. Existing backups are never opened, decompressed, or recompressed by rotation. A failed cleanup can temporarily leave extra backups and is retried on subsequent saves.
+
+Legacy character ZIPs remain untouched until two new-format backups exist. Their filesystem last-write time supplies the initial cooldown; no legacy contents are inspected. There may temporarily be more than two recovery copies during this transition.
 
 ## Configuration
 
@@ -132,7 +146,7 @@ Character backups are stored in:
 <Valheim dedicated server>/characters_local/backups/
 ```
 
-At most two backups are kept per character. Backups use a temporary file and safe replacement process to avoid leaving partially written ZIP archives.
+Two independent ZIP backups are retained per character after migration. A new archive is written to a temporary file, flushed and verified before publication; older backups are removed only afterward. See Character backup rotation above for timestamp rules and legacy migration.
 
 ## World-save safety
 

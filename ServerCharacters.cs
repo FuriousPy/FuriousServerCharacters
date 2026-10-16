@@ -18,7 +18,7 @@ namespace ServerCharacters;
 public class ServerCharacters : BaseUnityPlugin
 {
 	private const string ModName = "Furious Server Characters";
-	private const string ModVersion = "1.4.58";
+	private const string ModVersion = "1.4.59";
 	private const string ModGUID = "furiousservercharacters";
 
 	public static ServerCharacters selfReference = null!;
@@ -196,22 +196,6 @@ public class ServerCharacters : BaseUnityPlugin
 			{
 				string newPath = file.DirectoryName + Path.DirectorySeparatorChar + "Steam_" + file.Name;
 				file.MoveTo(newPath);
-			}
-		}
-
-		foreach (string s in Directory.GetFiles(Utils.CharacterSavePath))
-		{
-			FileInfo file = new(s);
-			if (Utils.IsServerCharactersFilePattern(file.Name))
-			{
-				Utils.ProfileName profileName = new();
-
-				string[] parts = file.Name.Split('_');
-				profileName.id = $"{parts[0]}_{parts[1]}";
-				profileName.name = parts[2].Split('.')[0];
-				PlayerProfile profile = new(file.Name.Replace(".fch", ""), FileHelpers.FileSource.Local);
-				profile.Load();
-				Utils.Cache.profiles[profileName] = profile;
 			}
 		}
 	}

@@ -33,23 +33,6 @@ public static class Utils
 		public static ProfileName fromPeer(ZNetPeer peer) => new() { id = GetPlayerID(peer.m_socket.GetHostName()), name = peer.m_playerName };
 	}
 
-	public static class Cache
-	{
-		public static readonly Dictionary<ProfileName, PlayerProfile> profiles = new();
-
-		public static PlayerProfile loadProfile(ProfileName name)
-		{
-			if (!profiles.TryGetValue(name, out PlayerProfile profile))
-			{
-				profile = new PlayerProfile($"{name.id}_{name.name}", FileHelpers.FileSource.Local);
-				profile.LoadPlayerFromDisk();
-				profiles[name] = profile;
-			}
-
-			return profile;
-		}
-	}
-
 	public static bool HasCharacterForPlayer(string playerId)
 	{
 		foreach (string s in Directory.GetFiles(CharacterSavePath))

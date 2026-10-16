@@ -1,108 +1,84 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 
 namespace ServerCharacters;
 
-// Contains no Unity calls: archive publication is complete before the old ZIP is replaced.
+// No Unity calls. Old backups are never opened or rewritten during rotation.
 internal static class ProfileBackupStore
 {
-	private sealed class Stamp
-	{
-		public long Length;
-		public DateTime Modified;
-		public DateTimeOffset LastBackup;
-	}
-
-	private static readonly Dictionary<string, Stamp> cache = new(StringComparer.OrdinalIgnoreCase);
+	private const string TimestampFormat = "yyyyMMdd'T'HHmmssfffffff'Z'";
 	private static readonly object gate = new();
 	private static readonly TimeSpan interval = TimeSpan.FromMinutes(30);
 
-	public static bool Update(string path, string profileName, Func<byte[]> readSource) =>
-		Update(path, profileName, readSource, DateTimeOffset.Now);
-
-	internal static bool Update(string path, string profileName, Func<byte[]> readSource, DateTimeOffset now)
+	private sealed class Backup
 	{
+		public string Path = "";
+		public DateTimeOffset SourceModified;
+		public DateTimeOffset Created;
+	}
+
+	public static bool Update(string legacyPath, string profileName, DateTime sourceModifiedUtc, Func<byte[]> readSource) =>
+		Update(legacyPath, profileName, sourceModifiedUtc, readSource, DateTimeOffset.UtcNow);
+
+	internal static bool Update(string legacyPath, string profileName, DateTime sourceModifiedUtc, Func<byte[]> readSource, DateTimeOffset now)
+	{
+		if (sourceModifiedUtc.Kind != DateTimeKind.Utc) throw new ArgumentException("Source timestamp must be UTC.", nameof(sourceModifiedUtc));
 		lock (gate)
 		{
-			FileInfo info = new(path);
-			if (info.Exists && cache.TryGetValue(path, out Stamp? stamp) &&
-				stamp.Length == info.Length && stamp.Modified == info.LastWriteTimeUtc &&
-				now - stamp.LastBackup < interval) return false;
-
-			using FileStream? existingFile = info.Exists ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete) : null;
-			using ZipArchive? existing = existingFile != null ? new ZipArchive(existingFile, ZipArchiveMode.Read) : null;
-			List<ZipArchiveEntry> entries = existing?.Entries.OrderByDescending(e => e.LastWriteTime).ToList() ?? new();
-			ZipArchiveEntry? latest = entries.FirstOrDefault();
-			// ZIP timestamps have two-second precision; round conservatively after a restart.
-			DateTimeOffset lastBackup = latest?.LastWriteTime.AddSeconds(2) ?? DateTimeOffset.MinValue;
-			byte[]? candidate = null;
-			bool create = latest == null || now - lastBackup >= interval;
-			if (create)
+			legacyPath = Path.GetFullPath(legacyPath);
+			string directory = Path.GetDirectoryName(legacyPath)!;
+			string prefix = Path.GetFileNameWithoutExtension(legacyPath) + "_old-";
+			DateTimeOffset sourceModified = new(sourceModifiedUtc);
+			now = now.ToUniversalTime();
+			List<Backup> backups = ReadBackups(directory, prefix);
+			Backup? latest = backups.FirstOrDefault();
+			// A legacy ZIP has no source timestamp. Keep it intact until two new backups exist.
+			// Its filesystem timestamp supplies only the initial cooldown, without opening it.
+			DateTimeOffset lastCreated = latest?.Created ??
+				(File.Exists(legacyPath) ? new DateTimeOffset(File.GetLastWriteTimeUtc(legacyPath)) : DateTimeOffset.MinValue);
+			if (now - lastCreated < interval || (latest != null && sourceModified <= latest.SourceModified))
 			{
-				candidate = readSource();
-				if (latest != null)
-				{
-					using Stream previous = latest.Open();
-					using MemoryStream current = new(candidate, false);
-					create = !StreamsHaveEqualContent(current, previous);
-				}
-			}
-
-			if (!create && entries.Count <= 2)
-			{
-				Remember(path, lastBackup);
+				Prune(backups, legacyPath);
 				return false;
 			}
 
-			Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-			string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+			byte[] candidate = readSource();
+			Directory.CreateDirectory(directory);
+			string destination = Path.Combine(directory, prefix + sourceModified.ToString(TimestampFormat, CultureInfo.InvariantCulture) +
+				"_backup-" + now.ToString(TimestampFormat, CultureInfo.InvariantCulture) + ".zip");
+			string temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
 			try
 			{
 				using (FileStream output = new(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
 				{
-					using (ZipArchive replacement = new(output, ZipArchiveMode.Create, true))
+					using (ZipArchive archive = new(output, ZipArchiveMode.Create, true))
 					{
-						foreach (ZipArchiveEntry entry in entries.Take(create ? 1 : 2).Reverse())
-						{
-							ZipArchiveEntry copy = replacement.CreateEntry(entry.FullName, CompressionLevel.Optimal);
-							copy.LastWriteTime = entry.LastWriteTime;
-							using Stream input = entry.Open();
-							using Stream target = copy.Open();
-							input.CopyTo(target);
-						}
-						if (create)
-						{
-							ZipArchiveEntry added = replacement.CreateEntry(profileName + "-" + now.ToString("yyyy-MM-ddTHH-mm-ss") + ".fch", CompressionLevel.Optimal);
-							added.LastWriteTime = now.ToLocalTime();
-							using Stream target = added.Open();
-							target.Write(candidate!, 0, candidate!.Length);
-						}
+						ZipArchiveEntry entry = archive.CreateEntry(profileName + ".fch", CompressionLevel.Fastest);
+						entry.LastWriteTime = now;
+						using Stream target = entry.Open();
+						target.Write(candidate, 0, candidate.Length);
 					}
 					output.Flush(true);
 				}
-
+				// Verify only the newly created archive before publication.
 				using (FileStream checkFile = File.OpenRead(temporary))
 				using (ZipArchive check = new(checkFile, ZipArchiveMode.Read))
 				{
-					if (check.Entries.Count != Math.Min(entries.Count + (create ? 1 : 0), 2))
-						throw new InvalidDataException("Unexpected number of entries in the replacement backup ZIP.");
-					if (create)
-					{
-						using Stream stored = check.Entries.Last().Open();
-						using MemoryStream expected = new(candidate!, false);
-						if (!StreamsHaveEqualContent(expected, stored))
-							throw new InvalidDataException("The replacement backup failed content verification.");
-					}
+					if (check.Entries.Count != 1) throw new InvalidDataException("Unexpected backup entry count.");
+					using Stream stored = check.Entries[0].Open();
+					using MemoryStream expected = new(candidate, false);
+					if (!StreamsHaveEqualContent(expected, stored))
+						throw new InvalidDataException("The new backup failed content verification.");
 				}
-
-				// Existing readers allow delete sharing; no truncate of the original ZIP.
-				if (info.Exists) File.Replace(temporary, path, null);
-				else File.Move(temporary, path);
-				Remember(path, create ? now : lastBackup);
-				return create;
+				File.Move(temporary, destination);
+				backups.Insert(0, new Backup { Path = destination, SourceModified = sourceModified, Created = now });
+				// Deletion happens only after the new file is fully verified and published.
+				Prune(backups, legacyPath);
+				return true;
 			}
 			finally
 			{
@@ -116,10 +92,28 @@ internal static class ProfileBackupStore
 		}
 	}
 
-	private static void Remember(string path, DateTimeOffset lastBackup)
+	private static List<Backup> ReadBackups(string directory, string prefix)
 	{
-		FileInfo file = new(path);
-		if (file.Exists) cache[path] = new Stamp { Length = file.Length, Modified = file.LastWriteTimeUtc, LastBackup = lastBackup };
+		List<Backup> backups = new();
+		if (!Directory.Exists(directory)) return backups;
+		foreach (string path in Directory.EnumerateFiles(directory, prefix + "*.zip"))
+		{
+			string name = Path.GetFileNameWithoutExtension(path);
+			if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+			string[] dates = name.Substring(prefix.Length).Split(new[] { "_backup-" }, StringSplitOptions.None);
+			if (dates.Length != 2 ||
+				!DateTimeOffset.TryParseExact(dates[0], TimestampFormat, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out DateTimeOffset source) ||
+				!DateTimeOffset.TryParseExact(dates[1], TimestampFormat, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out DateTimeOffset created)) continue;
+			backups.Add(new Backup { Path = path, SourceModified = source, Created = created });
+		}
+		return backups.OrderByDescending(b => b.Created).ThenByDescending(b => b.SourceModified).ToList();
+	}
+
+	private static void Prune(List<Backup> backups, string legacyPath)
+	{
+		// A failed deletion leaves extra recovery files and is retried on the next update.
+		foreach (Backup backup in backups.Skip(2)) File.Delete(backup.Path);
+		if (backups.Count >= 2 && File.Exists(legacyPath)) File.Delete(legacyPath);
 	}
 
 	internal static bool StreamsHaveEqualContent(Stream left, Stream right)
